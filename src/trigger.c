@@ -17,12 +17,14 @@ static u64 trigger_lower_bound(mosaic_runtime *rt, u32 ev) {
 u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
   if (!rt) return 0;
   u32 executed = 0;
+  u64 n = hdr_trigger_count(rt->map);          /* 计数不变,循环前读一次 */
   u64 i = trigger_lower_bound(rt, event_id);
-  u64 n = hdr_trigger_count(rt->map);
-  /* 注意:dispatch 是非重入的——派发过程中若 mod 回调触发墓碑(内部 mremap 移动映射),
-     缓存的 t 指针将悬垂。M1 单线程语义下安全;重入需重取表指针。 */
-  const mosaic_trigger_entry *t = (const mosaic_trigger_entry *)(rt->map + hdr_trigger_off(rt->map));
-  while (i < n && mt_event_id(&t[i]) == event_id) {
+  while (i < n) {
+    /* 每次迭代现算 t:mod 回调可能墓碑(内部 mremap MAYMOVE 移动 rt->map),
+       跨 execute 缓存表指针会悬垂(同线程重入同样崩)——t 必须从最新 rt->map 推导 */
+    const mosaic_trigger_entry *t =
+        (const mosaic_trigger_entry *)(rt->map + hdr_trigger_off(rt->map));
+    if (mt_event_id(&t[i]) != event_id) break;
     u64 fn_id = mt_fn_id(&t[i]);
     mosaic_fn_obj *fn = ws_find(rt, fn_id);
     if (!fn) {

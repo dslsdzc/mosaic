@@ -56,6 +56,7 @@ add_test(NAME test_lifecycle COMMAND test_lifecycle $<TARGET_FILE:test_mod> $<TA
 
 add_executable(test_trigger tests/test_trigger.c)
 target_link_libraries(test_trigger mosaic_core)
+target_include_directories(test_trigger PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)  # 重入回归测试访问 rt->map(内部结构)
 add_test(NAME test_trigger COMMAND test_trigger $<TARGET_FILE:test_mod>)
 
 # 偏差 D-9-1:简报 Step 5 的 CMake 块未含 src/ 私有头目录,但测试用 ws_find
