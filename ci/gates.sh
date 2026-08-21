@@ -13,4 +13,7 @@ ctest --test-dir build --output-on-failure
 echo "=== gates (10M cold functions) ==="
 build/bench/bench_runner 10000000
 
+echo "=== gates (100M sharded: 100 shards x 1M) ==="
+build/bench/bench_runner 100000000 2>/dev/null "" "" "" 100
+
 echo "=== ALL CHECKS PASSED ==="
