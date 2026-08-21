@@ -91,7 +91,7 @@ static void test_dispatch_tombstone_restore_cycle(void) {
 /* ---- 重入回归:派发循环内 mod 回调墓碑自身,内部 mremap(MAYMOVE) 移动
    pack 映射 → 循环缓存的天 trigger 表指针悬垂(SIGSEGV,单线程同崩)。
    回归测试通过紧贴映射尾端的 PROT_NONE fence 强迫 mremap 必须搬家,
-   使悬垂读确定性复现。修复后 dispatch 每轮从 rt->map 重取表指针。 ---- */
+   使悬垂读确定性复现。修复后 dispatch 每轮从 pack_map(rt, p) 重取表指针。 ---- */
 static int g_hook_calls = 0;
 static void self_tombstone_hook(void *rt_, void *fn_) {
   g_hook_calls++;
@@ -117,7 +117,7 @@ static void test_dispatch_self_tombstone_reentrancy(void) {
 
   /* 在 pack 映射尾端紧邻放置 PROT_NONE fence,强迫后续 mremap 移动映射(确定性复现) */
   long pg = sysconf(_SC_PAGESIZE);
-  uintptr_t end = (uintptr_t)rt->map + rt->map_len;
+  uintptr_t end = (uintptr_t)pack_map(rt, 0) + rt->packs[0].map_len;   /* M1.5-A:单 pack = pack 0 */
   uintptr_t fstart = (end + (uintptr_t)pg - 1) & ~(uintptr_t)(pg - 1);
   void *fence = mmap((void *)fstart, (size_t)pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
   MT_CHECK(fence != MAP_FAILED);

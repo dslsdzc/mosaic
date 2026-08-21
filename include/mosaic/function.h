@@ -13,6 +13,8 @@ typedef struct mosaic_fn_obj {
   u64 last_use;             /* Denning 窗口追踪 */
   u32 freq;                 /* GDSF-lite */
   u32 state_size;
+  u32 pack;                 /* M1.5-A:归属 pack(物化时 find_function_ex 填充;
+                              墓碑时用它定位 state blob) */
   struct mosaic_fn_obj *prev, *next;   /* 窗口链表 */
   struct slab *slab;
   const mosaic_function_record *rec;   /* 回指 mmap 记录 */

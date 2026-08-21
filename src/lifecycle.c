@@ -9,9 +9,13 @@
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   for (struct mod_entry *m = rt->mods; m; m = m->next)
     if (m->module_id == module_id) { m->refs++; return m->abi; }
-  const mosaic_module_record *rec = mosaic_runtime_find_module(rt, module_id);
+  /* M1.5-A:find_module_ex 给出归属 pack,module_string_ex 直接读该 pack 的 meta
+     (公开 module_string 的 uintptr_t 指针扫描是 implementation-defined,生命周期
+     内部不依赖它) */
+  size_t pack = 0;
+  const mosaic_module_record *rec = find_module_ex(rt, module_id, &pack);
   if (!rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
-  const char *path = mosaic_runtime_module_string(rt, rec, mm_so_off(rec));
+  const char *path = module_string_ex(rt, pack, rec, mm_so_off(rec));
   if (!path) { rt->last_err = MOSAIC_ERR_ABI; return NULL; }
   void *so = dlopen(path, RTLD_LOCAL | RTLD_LAZY);
   if (!so) { rt->last_err = MOSAIC_ERR_ABI; return NULL; }
@@ -54,12 +58,15 @@ void mod_unload(mosaic_runtime *rt, u64 module_id) {
 /* 状态 blob 布局:[4B reserved][(u32 len, bytes) 条目...]。
    偏差 D-2:计划原文首条目偏移返回 0,与 TOMBSTONED = COLD + state_off≠0
    (恢复判定 soff!=0、测试 MT_CHECK(mf_state_off(rec) != 0))矛盾;
-   故 blob 头部保留 4B 前缀,条目偏移恒 ≥ 4。materialize 恢复代码保持原文不变。 */
-int state_blob_append(mosaic_runtime *rt, const void *bytes, u32 len, u32 *out_off) {
-  const u8 *h = rt->map;
+   故 blob 头部保留 4B 前缀,条目偏移恒 ≥ 4。materialize 恢复代码保持原文不变。
+   M1.5-A:pack 参数——只对该 pack 的 map mremap(其他 pack 的指针不受影响,
+   这是分片架构的额外好处);state_len 游标也随 pack 走(struct pack_view)。 */
+int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 len, u32 *out_off) {
+  struct pack_view *pv = &rt->packs[pack];
+  const u8 *h = pv->map;
   u64 base = hdr_state_off(h);
   u64 cap = hdr_state_cap(h);
-  u64 used = rt->state_len;
+  u64 used = pv->state_len;
   u64 pos = used == 0 ? 4 : used;
   if (pos + 4ull + len > cap) {
     /* 扩容:mremap 翻倍(修正 D-10-3:文件映射越过 EOF 的页写入会 SIGBUS,
@@ -69,17 +76,17 @@ int state_blob_append(mosaic_runtime *rt, const void *bytes, u32 len, u32 *out_o
     u64 newcap = cap ? cap * 2 : 4096;
     while (newcap < pos + 4ull + len) newcap *= 2;
     size_t newlen = base + newcap;
-    if (ftruncate(rt->fd, (off_t)newlen) != 0) { rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
-    void *np = mremap(rt->map, rt->map_len, newlen, MREMAP_MAYMOVE);
+    if (ftruncate(pv->fd, (off_t)newlen) != 0) { rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
+    void *np = mremap(pv->map, pv->map_len, newlen, MREMAP_MAYMOVE);
     if (np == MAP_FAILED) { rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
-    rt->map = np; rt->map_len = newlen;
-    hdr_set_state_cap(rt->map, newcap);
+    pv->map = np; pv->map_len = newlen;
+    hdr_set_state_cap(pv->map, newcap);
   }
-  u8 *dst = rt->map + base + pos;
+  u8 *dst = pv->map + base + pos;
   wr_le32(dst, len);
   memcpy(dst + 4, bytes, len);
-  rt->state_len = pos + 4ull + len;
-  hdr_set_state_len(rt->map, rt->state_len);
+  pv->state_len = pos + 4ull + len;
+  hdr_set_state_len(pv->map, pv->state_len);
   *out_off = (u32)pos;
   return 0;
 }
@@ -88,7 +95,8 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
   if (!rt) return NULL;
   /* 偏差 D-4a(Task 5 评审 ⚠️-1):fn_id==0 与 ws 哈希空槽哨兵冲突,禁止注入 */
   if (fn_id == 0) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
-  const mosaic_function_record *rec = mosaic_runtime_find_function(rt, fn_id);
+  size_t pack = 0;
+  const mosaic_function_record *rec = find_function_ex(rt, fn_id, &pack);
   if (!rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
   mosaic_fn_obj *ex = ws_find(rt, fn_id);
   if (ex) return ex;   /* 已 ACTIVE:直接返回(幂等) */
@@ -112,13 +120,13 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
     state = p;
     u32 soff = mf_state_off(rec);
     if (soff != 0) {
-      /* TOMBSTONED → RESTORE:从 state blob 读回 */
-      const u8 *h = rt->map;
+      /* TOMBSTONED → RESTORE:从 fn 所在 pack 的 state blob 读回 */
+      const u8 *h = rt->packs[pack].map;
       u64 base = hdr_state_off(h);
-      if (base + soff + 4 <= rt->map_len) {
-        u32 len = rd_le32(rt->map + base + soff);
-        if (len <= sz && base + soff + 4 + len <= rt->map_len)
-          memcpy(state, rt->map + base + soff + 4, len);
+      if (base + soff + 4 <= rt->packs[pack].map_len) {
+        u32 len = rd_le32(rt->packs[pack].map + base + soff);
+        if (len <= sz && base + soff + 4 + len <= rt->packs[pack].map_len)
+          memcpy(state, rt->packs[pack].map + base + soff + 4, len);
       }
     }
   }
@@ -126,6 +134,7 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
   mosaic_fn_obj *fn = fn_alloc(rt);
   if (!fn) { free(state); mf_set_flags(rw, fl); mod_unload(rt, mf_module_id(rec)); return NULL; }
   fn->fn_id = fn_id;
+  fn->pack = (u32)pack;   /* M1.5-A:归属 pack,墓碑时定位 state blob */
   fn->rec = rec;
   fn->code = abi->fns[co].code;
   fn->state = state;
@@ -149,12 +158,15 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
 
 int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
   if (!rt || !fn) { if (rt) rt->last_err = MOSAIC_ERR_ILLEGAL; return -1; }
-  /* 修正 D-10-2:state_blob_append 的 mremap(MREMAP_MAYMOVE)可能移动整个 pack
-     映射,使其他 fn 对象缓存的 rec 指针悬垂(Task 10 S2 冷包 1000 函数逐批墓碑
+  /* 修正 D-10-2:state_blob_append 的 mremap(MREMAP_MAYMOVE)可能移动 pack 映射,
+     使其他 fn 对象缓存的 rec 指针悬垂(Task 10 S2 冷包 1000 函数逐批墓碑
      实测 SIGSEGV——I-1 修复只重取了本函数自己的 rw,未保护其他对象的 rec)。
-     与 I-1 同一模式:入口按 fn_id 重取记录,后续全部使用新鲜指针。 */
-  fn->rec = mosaic_runtime_find_function(rt, fn->fn_id);
+     与 I-1 同一模式:入口按 fn_id 重取记录(经 find_function_ex 同时刷新
+     fn->pack 指向当前归属 pack),后续全部使用新鲜指针。 */
+  size_t pack = 0;
+  fn->rec = find_function_ex(rt, fn->fn_id, &pack);
   if (!fn->rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return -1; }
+  fn->pack = (u32)pack;
   u16 fl = mf_flags(fn->rec);
   u8 st = (u8)(fl & MOSAIC_FN_STATE_MASK);
   if (st != MOSAIC_FN_STATE_ACTIVE) { rt->last_err = MOSAIC_ERR_ILLEGAL; return -1; }
@@ -164,18 +176,20 @@ int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
   mf_set_flags(rw, (u16)((fl & ~MOSAIC_FN_STATE_MASK) | MOSAIC_FN_STATE_QUIESCING));
   if (fn->state && (fl & MOSAIC_FN_REQUIRES_STATE) && fn->state_size) {
     u32 off = 0;
-    if (state_blob_append(rt, fn->state, fn->state_size, &off) != 0) {
+    if (state_blob_append(rt, pack, fn->state, fn->state_size, &off) != 0) {
       /* 回滚为 ACTIVE;失败路径 mremap 未发生,但统一重取指针杜绝任何悬垂写 */
-      rw = (mosaic_function_record *)mosaic_runtime_find_function(rt, fn->fn_id);
+      rw = (mosaic_function_record *)find_function_ex(rt, fn->fn_id, &pack);
+      fn->pack = (u32)pack;
       mf_set_flags(rw, fl);
       return -1;
     }
     /* 修复 I-1(Task 6 评审):state_blob_append 内部可能 mremap(MREMAP_MAYMOVE)
-       移动整个 pack 映射,append 前缓存的 rw 在 append 后悬垂(评审已用相邻 VMA
-       探针实证 SIGSEGV)。append 之后必须重取记录指针,并同步刷新 fn->rec,
-       供后续 mf_module_id(fn->rec) 与最终 set_flags(COLD) 使用。 */
-    rw = (mosaic_function_record *)mosaic_runtime_find_function(rt, fn->fn_id);
+       移动该 pack 映射,append 前缓存的 rw 在 append 后悬垂(评审已用相邻 VMA
+       探针实证 SIGSEGV)。append 之后必须重取记录指针,并同步刷新 fn->rec 与
+       fn->pack,供后续 mf_module_id(fn->rec) 与最终 set_flags(COLD) 使用。 */
+    rw = (mosaic_function_record *)find_function_ex(rt, fn->fn_id, &pack);
     fn->rec = rw;
+    fn->pack = (u32)pack;
     mf_set_state_off(rw, off);
   }
   /* 修复 M-1(Task 6 评审):fn_free 之后读 fn->rec 是逻辑 UAF(当前仅因结构体

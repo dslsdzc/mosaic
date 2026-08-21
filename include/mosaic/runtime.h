@@ -4,6 +4,7 @@
 
 typedef struct mosaic_runtime mosaic_runtime;
 
+mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_packs, char *errbuf, size_t errlen);
 mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t errlen);
 void mosaic_runtime_close(mosaic_runtime *rt);
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt);

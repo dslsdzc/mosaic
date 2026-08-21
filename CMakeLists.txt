@@ -82,3 +82,9 @@ target_include_directories(bench_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_link_libraries(bench_runner mosaic_core m dl)
 set_target_properties(bench_runner PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench)
+
+# M1.5-A:运行时多 pack 合并支持(open_many + 范围表合并索引 + 跨 pack 派发)
+add_executable(test_shards tests/test_shards.c)
+target_link_libraries(test_shards mosaic_core)
+target_include_directories(test_shards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_shards COMMAND test_shards $<TARGET_FILE:test_mod>)

@@ -9,9 +9,11 @@ static void set_err(mosaic_runtime *rt, u32 code, char *errbuf, size_t errlen, c
   if (errbuf && errlen) snprintf(errbuf, errlen, "%s", msg);
 }
 
-/* 校验并换算各表在 map 内的位置;失败返回 -1 并 set_err */
-static int validate_layout(mosaic_runtime *rt, char *errbuf, size_t errlen) {
-  const u8 *h = rt->map;
+/* 校验并换算各表在 map 内的位置;失败返回 -1 并 set_err。
+   M1.5-A:map/map_len 改为入参(open_many 逐 pack 校验) */
+static int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
+                           char *errbuf, size_t errlen) {
+  const u8 *h = map;
   if (hdr_magic(h) != MOSAIC_PACK_MAGIC) { set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "bad magic"); return -1; }
   if (hdr_version(h) != MOSAIC_PACK_VERSION) { set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "bad version"); return -1; }
   u64 moff = hdr_module_off(h), mc = hdr_module_count(h);
@@ -22,41 +24,123 @@ static int validate_layout(mosaic_runtime *rt, char *errbuf, size_t errlen) {
   u64 meoff = hdr_meta_off(h), melen = hdr_meta_len(h);
   u64 eoff = hdr_event_names_off(h), ec = hdr_event_count(h);
   /* 每表:偏移本身必须 ≤ map_len;count×size 用除法防 u64 回绕 */
-  if (moff > rt->map_len || mc > (rt->map_len - moff) / MM_SIZE ||
-      foff > rt->map_len || fc > (rt->map_len - foff) / FN_SIZE ||
-      toff > rt->map_len || tc > (rt->map_len - toff) / MT_SIZE ||
-      doff > rt->map_len || dc > (rt->map_len - doff) / MD_SIZE ||
-      meoff > rt->map_len || melen > rt->map_len - meoff ||
-      eoff > rt->map_len || ec > (rt->map_len - eoff) / MN_SIZE ||
-      soff > rt->map_len || scap > rt->map_len - soff || slen > scap) {
+  if (moff > map_len || mc > (map_len - moff) / MM_SIZE ||
+      foff > map_len || fc > (map_len - foff) / FN_SIZE ||
+      toff > map_len || tc > (map_len - toff) / MT_SIZE ||
+      doff > map_len || dc > (map_len - doff) / MD_SIZE ||
+      meoff > map_len || melen > map_len - meoff ||
+      eoff > map_len || ec > (map_len - eoff) / MN_SIZE ||
+      soff > map_len || scap > map_len - soff || slen > scap) {
     set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "offset out of bounds");
     return -1;
   }
   return 0;
 }
 
-mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t errlen) {
-  /* 修正 D-10-3:state_blob_append 需要 ftruncate 扩容文件再 mremap(否则写入
-     越过文件末页 → SIGBUS);先试 O_RDWR,只读 pack 回退 O_RDONLY(此时有状态
-     写入的墓碑会走 NOMEM 错误路径优雅失败,纯查询不受影响)。 */
-  int fd = open(pack_path, O_RDWR);
-  if (fd < 0) fd = open(pack_path, O_RDONLY);
-  if (fd < 0) { if (errbuf && errlen) snprintf(errbuf, errlen, "open %s failed", pack_path); return NULL; }
-  struct stat st;
-  if (fstat(fd, &st) != 0 || st.st_size < HDR_SIZE) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "pack too small"); return NULL; }
-  size_t len = (size_t)st.st_size;
-  void *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-  if (map == MAP_FAILED) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "mmap failed"); return NULL; }
-  mosaic_runtime *rt = calloc(1, sizeof *rt);
-  if (!rt) { munmap(map, len); close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "oom"); return NULL; }
-  rt->fd = fd; rt->map = map; rt->map_len = len;
-  rt->state_len = hdr_state_len(map);
-  rt->last_err = MOSAIC_OK;
-  if (validate_layout(rt, errbuf, errlen) != 0) {
-    munmap(map, len); close(fd); free(rt);
+/* M1.5-A 排序键:(min, max)。空范围 (1, 0) 排最前;同 min 时空范围(0)先于真实范围。
+   min 相同的真实范围不可能出现——open_many 拒绝重叠,同 min 即重叠 */
+static int cmp_pack_view(const void *a, const void *b_) {
+  const struct pack_view *x = a, *y = b_;
+  if (x->min_mod != y->min_mod) return x->min_mod < y->min_mod ? -1 : 1;
+  if (x->max_mod != y->max_mod) return x->max_mod < y->max_mod ? -1 : 1;
+  return 0;
+}
+
+/* 事件表逐条一致性(事件是宇宙级全局命名空间,dispatch 的 event_id 跨 pack 一致):
+   count、名字、顺序全部与 pack 0 相同;≤64 条,直接比较名字串 */
+static int event_tables_match(const struct pack_view *a, const struct pack_view *b) {
+  const u8 *m0 = a->map, *m1 = b->map;
+  u32 e0 = hdr_event_count(m0), e1 = hdr_event_count(m1);
+  if (e0 != e1) return 0;
+  if (e0 == 0) return 1;
+  const mosaic_event_name *n0 = (const mosaic_event_name *)(m0 + hdr_event_names_off(m0));
+  const mosaic_event_name *n1 = (const mosaic_event_name *)(m1 + hdr_event_names_off(m1));
+  u64 meta0 = hdr_meta_off(m0), meta1 = hdr_meta_off(m1);
+  for (u32 k = 0; k < e0; k++) {
+    u32 l0 = mn_len(&n0[k]), l1 = mn_len(&n1[k]);
+    u32 o0 = mn_off(&n0[k]), o1 = mn_off(&n1[k]);
+    if (l0 != l1) return 0;
+    if (meta0 + o0 + l0 > a->map_len || meta1 + o1 + l1 > b->map_len) return 0;
+    if (memcmp(m0 + meta0 + o0, m1 + meta1 + o1, l0) != 0) return 0;
+  }
+  return 1;
+}
+
+mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_packs,
+                                         char *errbuf, size_t errlen) {
+  if (n_packs == 0 || !paths) {
+    if (errbuf && errlen) snprintf(errbuf, errlen, "no packs");
     return NULL;
   }
+  struct pack_view *packs = calloc(n_packs, sizeof *packs);
+  if (!packs) { if (errbuf && errlen) snprintf(errbuf, errlen, "oom"); return NULL; }
+  mosaic_runtime *rt = calloc(1, sizeof *rt);
+  if (!rt) { free(packs); if (errbuf && errlen) snprintf(errbuf, errlen, "oom"); return NULL; }
+  rt->packs = packs;
+  rt->n_packs = n_packs;
+  rt->last_err = MOSAIC_OK;
+  for (size_t i = 0; i < n_packs; i++) {
+    /* 修正 D-10-3(逐 pack):state_blob_append 需要 ftruncate 扩容文件再 mremap
+       (否则写入越过文件末页 → SIGBUS);先试 O_RDWR,只读 pack 回退 O_RDONLY
+       (此时有状态写入的墓碑会走 NOMEM 错误路径优雅失败,纯查询不受影响)。 */
+    struct pack_view *pv = &packs[i];
+    pv->fd = -1;
+    int fd = open(paths[i], O_RDWR);
+    if (fd < 0) fd = open(paths[i], O_RDONLY);
+    if (fd < 0) { if (errbuf && errlen) snprintf(errbuf, errlen, "open %s failed", paths[i]); goto fail; }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < HDR_SIZE) {
+      close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "pack too small"); goto fail;
+    }
+    size_t len = (size_t)st.st_size;
+    void *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "mmap failed"); goto fail; }
+    pv->fd = fd; pv->map = map; pv->map_len = len;
+    pv->state_len = hdr_state_len(map);
+    pv->min_mod = 1; pv->max_mod = 0;   /* 空模块表默认空范围 */
+  }
+  for (size_t i = 0; i < n_packs; i++)
+    if (validate_layout(rt, packs[i].map, packs[i].map_len, errbuf, errlen) != 0) goto fail;
+  /* 模块范围表:模块表按 id 排序,取首/末条;空表 → 空范围(跳过) */
+  for (size_t i = 0; i < n_packs; i++) {
+    u64 mc = hdr_module_count(packs[i].map);
+    if (mc) {
+      const mosaic_module_record *mods = (const mosaic_module_record *)(packs[i].map + hdr_module_off(packs[i].map));
+      packs[i].min_mod = mm_id(&mods[0]);
+      packs[i].max_mod = mm_id(&mods[mc - 1]);
+    }
+  }
+  /* 排序(按 min),rt->packs 顺序即范围表顺序 */
+  qsort(packs, n_packs, sizeof *packs, cmp_pack_view);
+  /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后相邻两两检查即可;
+     空范围 (1,0) 的 max < min,天然不命中重叠条件 */
+  for (size_t i = 1; i < n_packs; i++) {
+    if (packs[i - 1].min_mod <= packs[i].max_mod && packs[i].min_mod <= packs[i - 1].max_mod) {
+      if (errbuf && errlen) snprintf(errbuf, errlen, "overlapping pack module ranges");
+      goto fail;
+    }
+  }
+  /* 事件表一致性:所有 pack 与 packs[0] 逐条相同 */
+  for (size_t i = 1; i < n_packs; i++) {
+    if (!event_tables_match(&packs[0], &packs[i])) {
+      if (errbuf && errlen) snprintf(errbuf, errlen, "event table mismatch");
+      goto fail;
+    }
+  }
   return rt;
+fail:
+  for (size_t i = 0; i < n_packs; i++) {
+    if (packs[i].map) munmap(packs[i].map, packs[i].map_len);
+    if (packs[i].fd >= 0) close(packs[i].fd);
+  }
+  free(packs);
+  free(rt);
+  return NULL;
+}
+
+mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t errlen) {
+  const char *paths[1] = { pack_path };
+  return mosaic_runtime_open_many(paths, 1, errbuf, errlen);
 }
 
 void mosaic_runtime_close(mosaic_runtime *rt) {
@@ -64,36 +148,64 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
   for (struct mod_entry *m = rt->mods; m; ) { struct mod_entry *nx = m->next; if (m->so) dlclose(m->so); free(m); m = nx; }
   for (struct slab *s = rt->slabs; s; ) { struct slab *nx = s->next; free(s->start); free(s); s = nx; }
   free(rt->ws.keys); free(rt->ws.vals);
-  munmap(rt->map, rt->map_len);
-  close(rt->fd);
+  for (size_t i = 0; i < rt->n_packs; i++) {
+    munmap(rt->packs[i].map, rt->packs[i].map_len);
+    close(rt->packs[i].fd);
+  }
+  free(rt->packs);
   free(rt);
 }
 
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt) { return rt ? rt->last_err : MOSAIC_ERR_IO; }
-u64 mosaic_runtime_function_count(const mosaic_runtime *rt) { return rt ? hdr_fn_count(rt->map) : 0; }
 
-const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_module_record *m, u32 off) {
-  if (!rt || !m || off == 0) return NULL;
-  u64 base = hdr_meta_off(rt->map);
-  if (base + off >= rt->map_len) return NULL;
-  return (const char *)(rt->map + base + off);
+u64 mosaic_runtime_function_count(const mosaic_runtime *rt) {
+  if (!rt) return 0;
+  u64 total = 0;
+  for (size_t i = 0; i < rt->n_packs; i++) total += hdr_fn_count(rt->packs[i].map);
+  return total;
 }
 
+/* M1.5-A:ex 变体带 pack 参数(生命周期内部用,不依赖指针扫描) */
+const char *module_string_ex(const mosaic_runtime *rt, size_t pack, const mosaic_module_record *m, u32 off) {
+  if (!rt || pack >= rt->n_packs || !m || off == 0) return NULL;
+  const u8 *map = rt->packs[pack].map;
+  u64 base = hdr_meta_off(map);
+  if (base + off >= rt->packs[pack].map_len) return NULL;
+  return (const char *)(map + base + off);
+}
+
+/* 公开接口:off 语义指向 meta blob;m 的归属 pack 未知,用 uintptr_t 扫描
+   pack 范围(base ≤ ptr < base+len)定位。implementation-defined:依赖 Linux
+   用户空间活动映射互不重叠、指针值全序(其他平台可能返回 NULL)。 */
+const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_module_record *m, u32 off) {
+  if (!rt || !m || off == 0) return NULL;
+  uintptr_t p = (uintptr_t)m;
+  for (size_t i = 0; i < rt->n_packs; i++) {
+    uintptr_t b = (uintptr_t)rt->packs[i].map;
+    if (p >= b && p < b + rt->packs[i].map_len)
+      return module_string_ex(rt, i, m, off);
+  }
+  return NULL;
+}
+
+/* M1.5-A:事件查找在 pack 0 的事件表二分(所有 pack 已校验一致) */
 u32 mosaic_runtime_event_id(mosaic_runtime *rt, const char *name) {
   if (!rt || !name) return MOSAIC_U32_NONE;
-  u64 ec = hdr_event_count(rt->map);
-  u64 eoff = hdr_event_names_off(rt->map);
-  u64 base = hdr_meta_off(rt->map);
+  const u8 *map = pack_map(rt, 0);
+  if (!map) { rt->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
+  u64 ec = hdr_event_count(map);
+  u64 eoff = hdr_event_names_off(map);
+  u64 base = hdr_meta_off(map);
   size_t nl = strlen(name);
   /* 二分查找:event_names 表在构建期按名排序(v2),事件 id = 排序位置。
      比较用显式长度 + memcmp 前缀,长度不同天然分序——前缀/截断串不会误匹配 */
   u64 lo = 0, hi = ec;
   while (lo < hi) {
     u64 mid = lo + (hi - lo) / 2;
-    const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + mid * MN_SIZE);
+    const mosaic_event_name *en = (const mosaic_event_name *)(map + eoff + mid * MN_SIZE);
     u32 o = mn_off(en), l = mn_len(en);
-    if (base + o + l > rt->map_len) { rt->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
-    const char *p = (const char *)(rt->map + base + o);
+    if (base + o + l > rt->packs[0].map_len) { rt->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
+    const char *p = (const char *)(map + base + o);
     size_t c = l < nl ? (size_t)l : nl;
     int r = memcmp(name, p, c);
     if (r == 0) r = (nl > (size_t)l) - (nl < (size_t)l);

@@ -14,3 +14,6 @@ bench/*.pack
 .vscode/
 .idea/
 *.swp
+# ASan/UBSan and debug build dirs
+build-asan/
+build-dbg/

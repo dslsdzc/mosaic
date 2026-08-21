@@ -1,7 +1,7 @@
 #include "mosaic/base.h"
 #include "mosaic/pack.h"
 #include "mosaic/runtime.h"
-#include "mosaic_internal.h"   /* 测试直接读 rt->map 校验布局 */
+#include "mosaic_internal.h"   /* 测试经 pack_map(rt, 0) 校验布局(M1.5-A 单 pack 场景) */
 #include "mini_test.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +80,7 @@ static void test_find_all_functions(void) {
     const mosaic_function_record *r = mosaic_runtime_find_function(rt, fn_ids[i]);
     if (r) { hits++; MT_CHECK_EQ_U64(mf_id(r), fn_ids[i]); MT_CHECK_EQ_U64(mf_module_id(r), fn_modules[i]); }
     const mosaic_function_record *nr = NULL;
-    int found = naive_find_fn(fn_ids[i], &nr, rt->map);
+    int found = naive_find_fn(fn_ids[i], &nr, pack_map(rt, 0));   /* M1.5-A:单 pack 场景 = pack 0 */
     MT_CHECK((r != NULL) == (found == 0));
   }
   MT_CHECK_EQ_U64(hits, N_FNS);
@@ -118,7 +118,7 @@ static void test_find_module_functions_are_contiguous(void) {
   for (int i = 0; i < N_MODULES; i++) {
     const mosaic_module_record *m = mosaic_runtime_find_module(rt, mod_ids[i]);
     u32 base = mm_fn_base(m), cnt = mm_fn_count(m);
-    const mosaic_function_record *fns = (const mosaic_function_record *)(rt->map + hdr_fn_off(rt->map));
+    const mosaic_function_record *fns = (const mosaic_function_record *)(pack_map(rt, 0) + hdr_fn_off(pack_map(rt, 0)));
     for (u32 j = 0; j < cnt; j++)
       MT_CHECK_EQ_U64(mf_module_id(&fns[base + j]), (u32)mod_ids[i]);
   }
