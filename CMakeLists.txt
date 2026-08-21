@@ -16,6 +16,7 @@ add_library(mosaic_core STATIC
   src/trigger.c
   src/ownership.c
   src/eviction.c
+  src/deps.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mosaic_core PRIVATE m dl)
@@ -88,3 +89,8 @@ add_executable(test_shards tests/test_shards.c)
 target_link_libraries(test_shards mosaic_core)
 target_include_directories(test_shards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_shards COMMAND test_shards $<TARGET_FILE:test_mod>)
+
+# M2-1:依赖图遍历 + 闭包解析(纯记录读取,不 dlopen → 无需 test_mod)
+add_executable(test_deps tests/test_deps.c)
+target_link_libraries(test_deps mosaic_core)
+add_test(NAME test_deps COMMAND test_deps)
