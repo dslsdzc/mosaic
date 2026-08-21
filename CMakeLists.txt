@@ -38,3 +38,8 @@ add_executable(test_index tests/test_index.c)
 target_link_libraries(test_index mosaic_core)
 target_include_directories(test_index PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_index COMMAND test_index)
+
+add_executable(test_working_set tests/test_working_set.c)
+target_link_libraries(test_working_set mosaic_core)
+target_include_directories(test_working_set PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_working_set COMMAND test_working_set)
