@@ -16,4 +16,7 @@ build/bench/bench_runner 10000000
 echo "=== gates (100M sharded: 100 shards x 1M) ==="
 build/bench/bench_runner 100000000 2>/dev/null "" "" "" 100
 
+echo "=== world scenarios (100k fns, 10 entities, 1000 ticks) ==="
+build/bench/world_bench
+
 echo "=== ALL CHECKS PASSED ==="

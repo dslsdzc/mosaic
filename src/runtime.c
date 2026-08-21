@@ -203,6 +203,11 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
 
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt) { return rt ? rt->last_err : MOSAIC_ERR_IO; }
 
+/* M3-3:工作集大小 = ws 哈希中已物化 ACTIVE 函数数(驱逐/调优观测点) */
+u32 mosaic_runtime_working_set_count(const mosaic_runtime *rt) {
+  return rt ? (u32)rt->ws.len : 0;
+}
+
 u64 mosaic_runtime_function_count(const mosaic_runtime *rt) {
   if (!rt) return 0;
   u64 total = 0;

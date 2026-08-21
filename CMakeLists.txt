@@ -147,3 +147,12 @@ add_test(NAME test_events COMMAND test_events $<TARGET_FILE:test_mod>)
 add_executable(test_world tests/test_world.c)
 target_link_libraries(test_world mosaic_core)
 add_test(NAME test_world COMMAND test_world $<TARGET_FILE:test_mod>)
+
+# M3-3:世界场景基准(S-W1 生命周期门禁、S-W2 工作集 vs 函数总数门禁、
+# S-W3 吞吐诊断);world pack 构建逻辑在 world_bench.c 内部,
+# 复用 synth_universe.c 的 rng/计时/RSS 助手
+add_executable(world_bench bench/world_bench.c bench/synth_universe.c)
+target_include_directories(world_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+target_link_libraries(world_bench mosaic_core m dl)
+set_target_properties(world_bench PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench)
