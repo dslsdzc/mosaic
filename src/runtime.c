@@ -166,6 +166,9 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
   }
   for (struct slab *s = rt->slabs; s; ) { struct slab *nx = s->next; free(s->start); free(s); s = nx; }
   free(rt->ws.keys); free(rt->ws.vals);
+  /* M2-2a:generation 路由表(NULL = 无更新);gen_route_free 释放内部数组,
+     表体本身(M2-2b 由 tx 分配)在此一并释放 */
+  if (rt->routes) { gen_route_free(rt->routes); free(rt->routes); }
   for (size_t i = 0; i < rt->n_packs; i++) {
     munmap(rt->packs[i].map, rt->packs[i].map_len);
     close(rt->packs[i].fd);

@@ -16,6 +16,6 @@ static const mosaic_fn_entry g_fns[3] = {
 };
 
 const mosaic_module_abi *mosaic_module_abi_v1(void) {
-  static const mosaic_module_abi abi = { MOSAIC_MODULE_ABI_VERSION, 3, g_fns, 64 };
+  static const mosaic_module_abi abi = { MOSAIC_MODULE_ABI_VERSION, 3, g_fns, 64, 0, NULL };
   return &abi;
 }

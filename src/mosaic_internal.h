@@ -58,6 +58,21 @@ struct pack_view {
   u64 min_mod, max_mod;
 };
 
+/* genroute.c — fn_id → 活跃 generation 路由(开放寻址,复用 ws_hash 键位混合
+   纪律):默认(无条目)= 该 fn 在基础 pack 中的原始记录(generation 最低);
+   put 建立/覆盖路由;swap 原子替换整表(commit 用,旧表指针保留供 rollback
+   demote)。 */
+struct gen_route {
+  u64 cap, len;
+  u64 *keys;      /* fn_id,0 = 空槽 */
+  u32 *gens;      /* 活跃 generation */
+};
+int gen_route_put(struct gen_route *t, u64 fn_id, u32 gen);   /* 扩容失败 → -1 */
+u32 gen_route_get(const struct gen_route *t, u64 fn_id);      /* 0 = 无条目 */
+struct gen_route *gen_route_swap(struct gen_route **slot, struct gen_route *new_table);
+/* swap 返回旧表指针(调用方持有以支持 rollback);新表由调用方构造并填充 */
+void gen_route_free(struct gen_route *t);
+
 struct mosaic_runtime {
   struct pack_view *packs;
   size_t n_packs;
@@ -68,6 +83,7 @@ struct mosaic_runtime {
   struct ws_hash ws;
   struct mosaic_fn_obj *ws_head, *ws_tail;
   struct slab *slabs;
+  struct gen_route *routes;   /* fn_id → 活跃 generation 路由表(NULL = 无更新) */
   u32 last_err;
 };
 

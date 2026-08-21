@@ -17,6 +17,7 @@ add_library(mosaic_core STATIC
   src/ownership.c
   src/eviction.c
   src/deps.c
+  src/genroute.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mosaic_core PRIVATE m dl)
@@ -94,3 +95,9 @@ add_test(NAME test_shards COMMAND test_shards $<TARGET_FILE:test_mod>)
 add_executable(test_deps tests/test_deps.c)
 target_link_libraries(test_deps mosaic_core)
 add_test(NAME test_deps COMMAND test_deps)
+
+# M2-2a:generation 路由表(内部结构,含 builder 设置器往返,无需 test_mod)
+add_executable(test_genroute tests/test_genroute.c)
+target_link_libraries(test_genroute mosaic_core)
+target_include_directories(test_genroute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_genroute COMMAND test_genroute)

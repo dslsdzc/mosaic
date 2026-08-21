@@ -49,6 +49,8 @@ static inline void hdr_set_event_count(u8 *h, u32 v) { wr_le32(h + HDR_EVENT_COU
 static inline void hdr_set_event_names_off(u8 *h, u64 v) { wr_le64(h + HDR_EVENT_NAMES_OFF, v); }
 
 /* ---- FunctionRecord (48B) ---- */
+/* FN_OFF_RSVD(44,最后 4B):transform 索引槽(0=无,否则 abi->transforms[reserved-1]);
+   M2-2b 消费。u64 reserved 的剩余高 4B 未使用(PAD 对齐),保持 0。 */
 enum {
   FN_OFF_CODE = 0, FN_OFF_DEP = 4, FN_OFF_STATE = 8, FN_OFF_META = 12,
   FN_OFF_ID = 16, FN_OFF_MODULE = 24, FN_OFF_FLAGS = 28, FN_OFF_PAD = 30,
@@ -80,6 +82,7 @@ static inline u16 mf_flags(const mosaic_function_record *r) { return rd_le16(r->
 static inline u32 mf_generation(const mosaic_function_record *r) { return rd_le32(r->bytes + FN_OFF_GEN); }
 static inline u32 mf_state_size(const mosaic_function_record *r) { return rd_le32(r->bytes + FN_OFF_SIZE_HINT); }
 static inline u32 mf_cost_hint(const mosaic_function_record *r) { return rd_le32(r->bytes + FN_OFF_COST); }
+static inline u32 mf_reserved(const mosaic_function_record *r) { return rd_le32(r->bytes + FN_OFF_RSVD); }
 static inline void mf_set_code_off(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_CODE, v); }
 static inline void mf_set_state_off(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_STATE, v); }
 static inline void mf_set_meta_off(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_META, v); }
@@ -89,6 +92,7 @@ static inline void mf_set_flags(mosaic_function_record *r, u16 v) { wr_le16(r->b
 static inline void mf_set_generation(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_GEN, v); }
 static inline void mf_set_state_size(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_SIZE_HINT, v); }
 static inline void mf_set_cost_hint(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_COST, v); }
+static inline void mf_set_reserved(mosaic_function_record *r, u32 v) { wr_le32(r->bytes + FN_OFF_RSVD, v); }
 
 /* ---- ModuleRecord (64B) ---- */
 enum {
@@ -154,6 +158,9 @@ void mosaic_pack_builder_add_fn(mosaic_pack_builder *b, u64 module_id, u64 local
                                 u32 state_size, u32 generation, u32 cost_hint, u16 flags_extra);
 void mosaic_pack_builder_add_trigger(mosaic_pack_builder *b, u32 event_id, u64 fn_id);
 void mosaic_pack_builder_add_dep(mosaic_pack_builder *b, u64 owner_id, u64 dep_id);
+/* 给已 add 的函数设置状态迁移索引(0 = 无;>0 = abi->transforms[idx-1]);
+   线性扫描 fn 记录(补丁 pack 通常很小);fn_id 不存在 → 返回 -1 + 不置 err */
+int mosaic_pack_builder_set_fn_transform(mosaic_pack_builder *b, u64 fn_id, u32 transform_index);
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen);
 void mosaic_pack_builder_free(mosaic_pack_builder *b);
 #endif

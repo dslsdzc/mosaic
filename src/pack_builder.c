@@ -116,6 +116,21 @@ void mosaic_pack_builder_add_dep(mosaic_pack_builder *b, u64 owner_id, u64 dep_i
   md_set_dep(d, dep_id);
 }
 
+/* M2-2a:给已 add 的函数设置状态迁移索引(0 = 无;>0 = abi->transforms[idx-1])。
+   线性扫描 fn 记录(补丁 pack 通常很小);fn_id 不存在 → 返回 -1 + 不置 err
+   (不置 b->failed:设置器语义是可选附加,漏设不改写记录)。finish 的 qsort
+   按 fn_id 排序,reserved 字段随记录一起写出,排序不受影响。 */
+int mosaic_pack_builder_set_fn_transform(mosaic_pack_builder *b, u64 fn_id, u32 transform_index) {
+  if (!b || b->failed) return -1;
+  for (u64 i = 0; i < b->fn_cursor; i++) {
+    if (mf_id(&b->fns[i]) == fn_id) {
+      mf_set_reserved(&b->fns[i], transform_index);
+      return 0;
+    }
+  }
+  return -1;
+}
+
 static int cmp_fn(const void *a, const void *b_) {
   const mosaic_function_record *x = a, *y = b_;
   u64 ix = mf_id(x), iy = mf_id(y);
