@@ -1,8 +1,9 @@
 /* tests/test_world.c — M3-2:合成世界模拟器。
    世界基础(create/destroy/计数/ticks)、动作 → 事件派发(每事件 1 订阅函数,
-   state 计数)、事件名未注册跳过派发、生成器(同 seed 确定性 / HIGH 档
-   entity_tick 计数 = 实体数 × ticks / 世界活跃与实体增长)、载荷正确性
-   (code_off 5 载荷探针把事件载荷拷贝进 state 供断言 == 动作参数)。
+   state 计数)、事件名未注册跳过派发、标准目录 pack 全链路(M3-2 评审 I-1:
+   事件名取自 events.h,mosaic_event_spec_by_name 接缝守卫)、生成器(同 seed
+   确定性 / HIGH 档 entity_tick 计数 = 实体数 × ticks / 世界活跃与实体增长)、
+   载荷正确性(code_off 5 载荷探针把事件载荷拷贝进 state 供断言 == 动作参数)。
    需要 test_mod.so fixture(CMake 传入;code_off 5 = code_payload_probe)。 */
 #include "mosaic/base.h"
 #include "mosaic/events.h"
@@ -31,9 +32,10 @@ static int ev_cmp(const char *a, const char *b) {
 }
 
 /* ---- 事件集 A:14 个事件(注册序 == 排序序 → trigger id = 注册下标;
-     运行时 event_id 断言 == 下标,验证排序无偏) ---- */
+     运行时 event_id 断言 == 下标,验证排序无偏;击杀统一派发目录事件名
+     entity_death —— M3-2 评审 I-1) ---- */
 static const char *EVS_A[14] = {
-  "block_break", "block_place", "entity_damage", "entity_kill", "entity_spawn",
+  "block_break", "block_place", "entity_damage", "entity_death", "entity_spawn",
   "entity_tick", "item_craft", "item_use", "player_chat", "player_join",
   "player_leave", "tick", "time_change", "weather_change",
 };
@@ -126,7 +128,7 @@ static void test_actions_dispatch_events(void) {
   mosaic_world_entity_damage(w, rt, e1, 3);
   MT_CHECK_EQ_U64(ev_counter(rt, 2), 1);        /* entity_damage */
   mosaic_world_entity_kill(w, rt, e1);
-  MT_CHECK_EQ_U64(ev_counter(rt, 3), 1);        /* entity_kill */
+  MT_CHECK_EQ_U64(ev_counter(rt, 3), 1);        /* entity_death */
 
   mosaic_world_block_break(w, rt, 0, 1, 2, 3, 7);
   MT_CHECK_EQ_U64(ev_counter(rt, 0), 1);        /* block_break */
@@ -277,8 +279,104 @@ static void test_unregistered_events_noop(void) {
   mosaic_runtime_close(rt);
 }
 
-/* ---- 生成器确定性:同 seed + 同动作序列 + 同 step → 同事件流
-     (step 返回值、全部订阅计数增量、世界终态一致) ---- */
+/* ---- M3-2 评审 I-1:标准目录 pack 全链路。事件名全部取自 events.h 目录
+     (mosaic_event_spec_by_name 逐个命中——名字接缝守卫:世界全部派发名必须
+     在标准目录内,否则动作/生成器在标准目录 pack 上静默跳过);动作全链路
+     join/spawn/kill/break 等派发后订阅计数正确;生成器在标准目录上按模型
+     跑通(LOW/MID 修正档事件在长窗口内命中、计数增长)。 ---- */
+static void test_standard_catalog_chain(void) {
+  /* 世界派发名全集:动作 10 + 生成器 20 的并集(按目录长度感知序排 =
+     runtime event_id == 排序下标 的断言前提) */
+  static const char *CAT[20] = {
+    "block_break", "block_explode", "block_place",
+    "entity_combust", "entity_damage", "entity_death", "entity_explode",
+    "entity_fall", "entity_spawn", "entity_tick",
+    "item_craft", "item_use",
+    "player_chat", "player_join", "player_leave",
+    "player_toggle_sneak", "player_toggle_sprint",
+    "tick", "time_change", "weather_change",
+  };
+  /* 名字接缝守卫:每个派发名都必须在标准目录内 */
+  for (u32 i = 0; i < 20; i++)
+    MT_CHECK(mosaic_event_spec_by_name(CAT[i]) != NULL);
+
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(
+      "/tmp/mosaic_test_world_cat.pack", 1, 20, 20, 0, 20);
+  if (!b) return;
+  for (u32 i = 0; i < 20; i++) mosaic_pack_builder_add_event(b, CAT[i]);
+  mosaic_pack_builder_add_module(b, MOD_ID, 1, "mod_cat", SO_PATH);
+  for (u32 i = 0; i < 20; i++)
+    mosaic_pack_builder_add_fn(b, MOD_ID, i, 0, 64, 1, 0, FN_FLAGS);
+  for (u32 i = 0; i < 20; i++) mosaic_pack_builder_add_trigger(b, i, wfn(i));
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  if (rc) fprintf(stderr, "finish: %s\n", err);
+  mosaic_pack_builder_free(b);
+  if (rc) return;
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_world_cat.pack", err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  for (u32 i = 0; i < 20; i++)
+    MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, CAT[i]), i);   /* 全部注册,id == 目录排序位 */
+
+  mosaic_world *w = mosaic_world_create(0x1234u);
+  MT_CHECK(w != NULL);
+  if (!w) { mosaic_runtime_close(rt); return; }
+
+  /* 动作全链路:join/spawn/kill/break/place/use/craft/chat/damage/leave,
+     每事件订阅计数精确 —— 标准目录下无名字接缝 */
+  u32 p1 = mosaic_world_player_join(w, rt);
+  u32 p2 = mosaic_world_player_join(w, rt);
+  u32 p3 = mosaic_world_player_join(w, rt);
+  MT_CHECK_EQ_U64(ev_counter(rt, 13), 3);              /* player_join */
+  mosaic_world_player_leave(w, rt, p1);
+  MT_CHECK_EQ_U64(ev_counter(rt, 14), 1);              /* player_leave */
+  mosaic_world_player_chat(w, rt, p3);
+  MT_CHECK_EQ_U64(ev_counter(rt, 12), 1);              /* player_chat */
+  u32 e1 = mosaic_world_entity_spawn(w, rt, 5);
+  MT_CHECK_EQ_U64(ev_counter(rt, 8), 1);               /* entity_spawn */
+  mosaic_world_entity_damage(w, rt, e1, 3);
+  MT_CHECK_EQ_U64(ev_counter(rt, 4), 1);               /* entity_damage */
+  mosaic_world_entity_kill(w, rt, e1);
+  MT_CHECK_EQ_U64(ev_counter(rt, 5), 1);               /* entity_death:目录事件名 */
+  mosaic_world_block_break(w, rt, 0, 1, 2, 3, 7);
+  MT_CHECK_EQ_U64(ev_counter(rt, 0), 1);               /* block_break */
+  mosaic_world_block_place(w, rt, 0, 4, 5, 6, 8);
+  MT_CHECK_EQ_U64(ev_counter(rt, 2), 1);               /* block_place */
+  mosaic_world_item_use(w, rt, p3, 100);
+  MT_CHECK_EQ_U64(ev_counter(rt, 11), 1);              /* item_use */
+  mosaic_world_item_craft(w, rt, p3, 200);
+  MT_CHECK_EQ_U64(ev_counter(rt, 10), 1);              /* item_craft */
+  u32 e2 = mosaic_world_entity_spawn(w, rt, 6);
+  MT_CHECK_EQ_U64(ev_counter(rt, 8), 2);
+
+  /* 生成器在标准目录上跑通(全部事件注册 → 无 NONE 跳过):
+     1000 tick 后 tick 精确 1000;entity_tick ≥ 存活实体 × ticks(e2 存活,
+     生成器 spawn 只增不减);MID 档各事件在动作计数上继续增长;LOW 修正档
+     事件(⚠️3 四项 + toggle 两项 + item_craft/weather/time)长窗口内命中
+     (种子 0x1234 实证;每事件独立抽样,确定性断言) */
+  u64 s = mosaic_world_step(w, rt, 1000);
+  MT_CHECK(s >= 1000);                                 /* tick 每 tick ≥ 1 次执行 */
+  MT_CHECK_EQ_U64(ev_counter(rt, 17), 1000);           /* tick == ticks */
+  MT_CHECK(ev_counter(rt, 9) >= 1000);                 /* entity_tick ≥ 1 实体 × 1000 */
+  MT_CHECK(ev_counter(rt, 0) >= 2);                    /* block_break:动作 1 + 生成器 MID ≥ 1 */
+  MT_CHECK(ev_counter(rt, 2) >= 2);                    /* block_place */
+  MT_CHECK(ev_counter(rt, 4) >= 2);                    /* entity_damage */
+  MT_CHECK(ev_counter(rt, 11) >= 2);                   /* item_use */
+  MT_CHECK(ev_counter(rt, 12) >= 2);                   /* player_chat */
+  MT_CHECK(ev_counter(rt, 5) >= 2);                    /* entity_death:动作 1 + 生成器击杀 ≥ 1 */
+  MT_CHECK(ev_counter(rt, 15) + ev_counter(rt, 16) >= 1);  /* toggle_sneak/sprint(5%) */
+  MT_CHECK(ev_counter(rt, 1) + ev_counter(rt, 3) + ev_counter(rt, 6) +
+           ev_counter(rt, 7) >= 1);                    /* ⚠️3 四 LOW 修正档(0.1%) */
+  MT_CHECK(ev_counter(rt, 10) + ev_counter(rt, 18) + ev_counter(rt, 19) >= 1);
+                                                       /* item_craft/weather/time(0.1%) */
+  MT_CHECK_EQ_U64(mosaic_world_ticks(w), 1000);
+  mosaic_world_destroy(w);
+  mosaic_runtime_close(rt);
+}
+
+/* ---- 生成器确定性:同 seed + 同动作序列 + 同 step → 同计数与终态
+     (step 返回值、全部订阅计数增量、世界终态一致;载荷流未断言) ---- */
 static void test_generator_determinism(void) {
   mosaic_runtime *rt = open_pack_a();
   MT_CHECK(rt != NULL);
@@ -330,7 +428,7 @@ static void test_generator_high_tier_counts(void) {
   /* 干净窗口断言:窗口内生成器未 spawn/kill(种子 0x1 实证),故
      entity_tick == 3 × 16;若未来 rng 调整破坏该窗口,断言立即显式失败 */
   MT_CHECK_EQ_U64(ev_counter(rt, 4), 3);                /* 仅测试自身 3 次 spawn */
-  MT_CHECK_EQ_U64(ev_counter(rt, 3), 0);                /* entity_kill:窗口内 0 */
+  MT_CHECK_EQ_U64(ev_counter(rt, 3), 0);                /* entity_death:窗口内 0 */
   MT_CHECK_EQ_U64(ev_counter(rt, 5), 3 * 16);           /* entity_tick == 实体数 × ticks */
   MT_CHECK_EQ_U64(ev_counter(rt, 11), 16);              /* tick */
   MT_CHECK(r >= 3 * 16 + 16);
@@ -367,6 +465,7 @@ int main(int argc, char **argv) {
   MT_RUN(test_actions_dispatch_events);
   MT_RUN(test_payload_probe);
   MT_RUN(test_unregistered_events_noop);
+  MT_RUN(test_standard_catalog_chain);
   MT_RUN(test_generator_determinism);
   MT_RUN(test_generator_high_tier_counts);
   MT_RUN(test_generator_liveness_growth);

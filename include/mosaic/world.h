@@ -39,18 +39,23 @@ u32 mosaic_world_player_count(const mosaic_world *w);
    类型构造,名字解析失败(NONE)→ 跳过派发) ----
    player_join:分配新 player_id(单调分配器,1 起,不复用 → "重复 join 同 id"
      不可能发生,API 亦无入参 id)并派发 player_join(载荷 mosaic_ev_player)。
-     返回新 player_id(恒 ≥ 1,无失败路径)。
+     返回新 player_id(恒 ≥ 1,无失败路径;OOM 例外:玩家表扩容失败 → 不加入,
+     返回 0,世界照常)。
    player_leave:按 id 移除玩家并派发 player_leave;未知 id → no-op 无派发。
    player_chat:派发 player_chat;未知玩家 id → no-op 无派发。
    entity_spawn:分配新 entity_id + 出生点位置(rng 派生,确定性)并派发
-     entity_spawn(载荷 mosaic_ev_entity);返回 entity_id(恒 ≥ 1)。
-   entity_kill:按 id 移除实体并派发 entity_kill;未知 id → no-op 无派发。
+     entity_spawn(载荷 mosaic_ev_entity);返回 entity_id(恒 ≥ 1;OOM 例外:
+     实体表扩容失败 → 不加入,返回 0)。
+   entity_kill:按 id 移除实体并派发 entity_death(目录事件名——标准目录无
+     entity_kill,击杀动作与生成器统一派发,消除名字接缝);未知 id → no-op
+     无派发。
    entity_damage:派发 entity_damage;未知实体 id → no-op。amount 参数:载荷
      无伤害字段(mosaic_ev_entity 不含 amount,合成世界不维护血量),仅作动作
      签名保留。
    block_break / block_place:派发对应事件(载荷 mosaic_ev_block,player_id =
-     最近加入的活跃玩家,无玩家时 0)。坐标任意、不校验存在性——合成世界不
-     维护方块网格;dim 参数载荷无维度字段,仅作签名保留。
+     最近 join 的玩家 id(last_join_player:每次 join 更新;该玩家 leave 后置 0,
+     即使仍有其他活跃玩家;无玩家时 0))。坐标任意、不校验存在性——合成世界
+     不维护方块网格;dim 参数载荷无维度字段,仅作签名保留。
    item_use / item_craft:派发对应事件(载荷 mosaic_ev_item,slot 固定 0——
      合成世界无背包模型);未知玩家 id → no-op 无派发。 */
 u32 mosaic_world_player_join(mosaic_world *w, mosaic_runtime *rt);      /* 返回 player_id */

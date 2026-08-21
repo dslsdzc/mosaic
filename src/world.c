@@ -10,21 +10,26 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---- 频率档生成器(每 tick 序列,档位见 events.h freq 语义) ----
-   a) HIGH 档:entity_tick 对每个存活实体派发 1 次(载荷 {entity_id, type,
-      位置;位置每 tick 随机游走 ±1,确定性})+ tick 派发 1 次(载荷 {tick_no})
-   b) MID 档:block_break/block_place/item_use/item_craft/entity_damage/
-      player_chat 每 tick 5% 独立抽样(种子 rng,确定性)
-   c) LOW 档:player_join/player_leave/entity_spawn/entity_kill/
-      weather_change/time_change 每 tick 0.1% 独立抽样(entity_spawn 0.2%,
-      略高于击杀 0.1% —— 实体数随 step 缓慢增长);world_step 开始时若玩家数
-      < 3 且概率命中 → 自动补玩家(玩家数 0 时强制 join 1 个——硬存活保证,
-      保持世界活跃)
-   ⚠️3 承载(M3-1 评审):block_explode/entity_explode/entity_combust/
-   entity_fall/player_toggle_sneak/player_toggle_sprint 在目录中标 HIGH 但
-   真实生态为稀有(爆炸/自燃/摔落/潜行切换/疾跑切换均低频);目录 API 保持
-   (events.h 不改),生成器消费侧以覆盖表 g_freq_fixes 修正为 MID/LOW 抽样。
-   每个事件都掷骰后按需派发(rng 调用序与状态无关,保证确定性)。 */
+/* ---- 频率档生成器(每 tick 序列) ----
+   速率模型以覆盖表 g_freq_fixes 为唯一来源:世界可派发的全部事件(20 个)按
+   (生成档位, 抽样概率 num/den, 载荷构造方式)入表并注明理由;step 按表驱动
+   LOW/MID 两轮抽样(roll 序 = 表序,即 rng 调用序契约,勿重排),HIGH 档每
+   tick 全量派发(不入抽样轮,实现见 step 中 HIGH 块,表中标注)。events.h
+   目录 freq 是 API 语义档(供消费方参考:事件在真实生态中的常见程度),生成
+   器速率模型独立于目录档位——两者可独立演化,偏离理由见表内注释。
+   a) HIGH 档(每 tick 全量,不入抽样轮):entity_tick 对每个存活实体派发 1
+      次(载荷 {entity_id, type, 位置;位置每 tick 随机游走 ±1,确定性})+
+      tick 派发 1 次(载荷 {tick_no})
+   b) LOW 档:每 tick 每事件独立抽样(概率见表,多为 0.1%;entity_spawn
+      0.2%);每个事件都掷骰后按需派发(rng 调用序与状态无关,确定性;缺玩
+      家/实体时跳过派发——骰已掷)
+   c) MID 档:每 tick 5% 每事件独立抽样
+   d) fire-and-forget 不对称(自洽设计):生成器派发 player_leave/entity_death
+      只发事件、不更新世界表(动作 leave/kill 才真正删行)——对应真实生态中
+      事件先于状态收敛的语义;因此实体数净增(生成 0.2% > 击杀 0.1%)、玩家
+      数缓慢漂升(join 0.1% + 自动补玩家,leave 不删行)
+   e) world_step 开始时若玩家数 < 3 且概率命中 → 自动补玩家(玩家数 0 时强
+      制 join 1——硬存活保证,保持世界活跃;此机制是活跃度保证,不入抽样表) */
 
 typedef struct { u32 id, type, x, y, z; } world_entity;
 typedef struct { u32 id; } world_player;
@@ -214,7 +219,9 @@ void mosaic_world_entity_kill(mosaic_world *w, mosaic_runtime *rt, u32 entity_id
   world_stage st; memset(&st, 0, sizeof st);
   mosaic_ev_entity ev = { e.id, e.type, e.x, e.y, e.z };
   memcpy(st.bytes, &ev, sizeof ev);
-  world_dispatch(rt, world_ev_id(rt, "entity_kill"), &st);
+  /* M3-2 评审 I-1:击杀派发目录事件名 entity_death(标准目录无 entity_kill;
+     动作与生成器统一,消除名字接缝——否则标准目录 pack 上击杀动作静默跳过) */
+  world_dispatch(rt, world_ev_id(rt, "entity_death"), &st);
 }
 void mosaic_world_entity_damage(mosaic_world *w, mosaic_runtime *rt, u32 entity_id, u32 amount) {
   if (!w) return;
@@ -300,27 +307,68 @@ static u64 gen_dispatch_item_event(mosaic_world *w, mosaic_runtime *rt, const ch
   return world_dispatch(rt, world_ev_id(rt, name), &st);
 }
 
-/* ---- ⚠️3 覆盖表:目录标 HIGH 但真实生态稀有的事件 → 生成器消费侧降档。
-   events.h 目录 API 保持(不改标注);本表为生成器的抽样档位修正(消费侧),
-   step 按表驱动 LOW/MID 两轮抽样(roll 序 = 表序,确定性契约的一部分)。 ---- */
-typedef enum { FIX_BLOCK, FIX_ENTITY, FIX_PLAYER } world_fix_kind;
-typedef struct { const char *name; mosaic_ev_freq gen_tier; world_fix_kind kind; } world_freq_fix;
+/* ---- 生成器速率覆盖表(唯一来源):世界可派发的全部事件入表;生成器速率模型
+   以本表为唯一来源,events.h 目录 freq 是 API 语义档(供消费方参考),两者可
+   独立。每行:事件名 / 生成档位(LOW、MID 入抽样轮;HIGH 每 tick 全量派发,
+   不入轮,实现见 step 中 HIGH 块)/ 抽样概率 num/den / 载荷构造方式;理由列
+   注明与目录档位的偏离(⚠️3 六项 + 其余 HIGH→MID/LOW 修正 + item_craft 降
+   档,全部入表)。roll 序 = 表序(确定性契约的一部分,勿重排)。 ---- */
+typedef enum {
+  GEN_JOIN,   /* 入表 + 派发 player_join(经 world_join) */
+  GEN_LEAVE,  /* 仅派发 player_leave,不动表(fire-and-forget,见头注 d)) */
+  GEN_SPAWN,  /* 入表 + 派发 entity_spawn(经 world_spawn) */
+  GEN_KILL,   /* 仅派发 entity_death,不动表(fire-and-forget,见头注 d)) */
+  GEN_TICK,   /* 派发 tick 载荷事件(weather_change/time_change/tick) */
+  GEN_BLOCK,  /* 派发方块事件(载荷 player_id = last_join_player) */
+  GEN_ITEM,   /* 派发物品事件(随机玩家) */
+  GEN_ENTITY, /* 派发实体事件(随机实体) */
+  GEN_PLAYER, /* 派发玩家事件(随机玩家) */
+} world_gen_kind;
+typedef struct {
+  const char *name;         /* 事件名(派发名;GEN_JOIN/GEN_SPAWN 经 world_join/spawn 派发同名) */
+  mosaic_ev_freq gen_tier;  /* 生成器档位:LOW/MID 入抽样轮;HIGH 全量派发(不入轮) */
+  u32 num, den;             /* 抽样概率 num/den(不入轮条目置 1/1) */
+  world_gen_kind kind;      /* 载荷构造与派发方式 */
+} world_freq_fix;
 static const world_freq_fix g_freq_fixes[] = {
-  { "block_explode",        MOSAIC_EV_FREQ_LOW, FIX_BLOCK },   /* 方块爆炸:真实生态稀有 */
-  { "entity_explode",       MOSAIC_EV_FREQ_LOW, FIX_ENTITY },  /* 实体爆炸 */
-  { "entity_combust",       MOSAIC_EV_FREQ_LOW, FIX_ENTITY },  /* 实体自燃 */
-  { "entity_fall",          MOSAIC_EV_FREQ_LOW, FIX_ENTITY },  /* 实体摔落 */
-  { "player_toggle_sneak",  MOSAIC_EV_FREQ_MID, FIX_PLAYER },  /* 潜行切换:比 HIGH 档稀疏 */
-  { "player_toggle_sprint", MOSAIC_EV_FREQ_MID, FIX_PLAYER },  /* 疾跑切换 */
+  /* ---- LOW 轮(每 tick 独立抽样;roll 序 = 表序) ---- */
+  { "player_join",         MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_JOIN   }, /* 目录 LOW:进出服务器稀有 */
+  { "player_leave",        MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_LEAVE  }, /* 目录 LOW */
+  { "entity_spawn",        MOSAIC_EV_FREQ_LOW,  2, 1000, GEN_SPAWN  }, /* 目录 LOW;0.2% > 击杀 0.1%:实体缓慢增长 */
+  { "entity_death",        MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_KILL   }, /* 目录 LOW;击杀动作/生成器统一派发目录名(I-1) */
+  { "weather_change",      MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_TICK   }, /* 目录 LOW:天气变化稀有 */
+  { "time_change",         MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_TICK   }, /* 目录 LOW */
+  { "block_explode",       MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_BLOCK  }, /* 目录 HIGH → LOW:方块爆炸真实生态稀有(⚠️3) */
+  { "entity_explode",      MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_ENTITY }, /* 目录 HIGH → LOW:实体爆炸稀有(⚠️3) */
+  { "entity_combust",      MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_ENTITY }, /* 目录 HIGH → LOW:实体自燃稀有(⚠️3) */
+  { "entity_fall",         MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_ENTITY }, /* 目录 HIGH → LOW:实体摔落稀有(⚠️3) */
+  { "item_craft",          MOSAIC_EV_FREQ_LOW,  1, 1000, GEN_ITEM   }, /* 目录 LOW(修正:此前误按 MID 5% 升档) */
+  /* ---- MID 轮(每 tick 5% 每事件独立抽样) ---- */
+  { "block_break",         MOSAIC_EV_FREQ_MID,  5,  100, GEN_BLOCK  }, /* 目录 HIGH → MID:常见但非每实体每刻事件 */
+  { "block_place",         MOSAIC_EV_FREQ_MID,  5,  100, GEN_BLOCK  }, /* 目录 HIGH → MID */
+  { "item_use",            MOSAIC_EV_FREQ_MID,  5,  100, GEN_ITEM   }, /* 目录 HIGH → MID */
+  { "entity_damage",       MOSAIC_EV_FREQ_MID,  5,  100, GEN_ENTITY }, /* 目录 HIGH → MID */
+  { "player_chat",         MOSAIC_EV_FREQ_MID,  5,  100, GEN_PLAYER }, /* 目录 HIGH → MID */
+  { "player_toggle_sneak", MOSAIC_EV_FREQ_MID,  5,  100, GEN_PLAYER }, /* 目录 HIGH → MID:潜行切换稀疏(⚠️3) */
+  { "player_toggle_sprint",MOSAIC_EV_FREQ_MID,  5,  100, GEN_PLAYER }, /* 目录 HIGH → MID:疾跑切换稀疏(⚠️3) */
+  /* ---- HIGH 档(每 tick 全量派发,不入抽样轮;实现见 step 中 HIGH 块) ---- */
+  { "entity_tick",         MOSAIC_EV_FREQ_HIGH, 1,    1, GEN_ENTITY }, /* 目录 HIGH:每存活实体每 tick(位置游走) */
+  { "tick",                MOSAIC_EV_FREQ_HIGH, 1,    1, GEN_TICK   }, /* 目录 HIGH:每 tick 1 次 */
 };
-/* 表驱动派发:按修正档抽样一次;命中 → 按 kind 构造载荷派发 */
-static u64 gen_dispatch_fix(mosaic_world *w, mosaic_runtime *rt, const world_freq_fix *f,
-                            u32 num, u32 den) {
-  if (!rng_chance(w, num, den)) return 0;
+/* 表驱动派发:按条目概率抽样一次;命中 → 按 kind 构造载荷派发(返回执行数;
+   GEN_JOIN/GEN_SPAWN 返回 world_join/spawn 的派发数) */
+static u64 gen_dispatch_table(mosaic_world *w, mosaic_runtime *rt, const world_freq_fix *f) {
+  if (!rng_chance(w, f->num, f->den)) return 0;
   switch (f->kind) {
-    case FIX_BLOCK:  return gen_dispatch_block_event(w, rt, f->name);
-    case FIX_ENTITY: return gen_dispatch_entity_event(w, rt, f->name, world_random_entity(w));
-    case FIX_PLAYER: return gen_dispatch_player_event(w, rt, f->name, world_random_player_id(w));
+    case GEN_JOIN:   return world_join(w, rt, NULL);
+    case GEN_LEAVE:  return gen_dispatch_player_event(w, rt, f->name, world_random_player_id(w));
+    case GEN_SPAWN:  return world_spawn(w, rt, rng_below(w, 16) + 1, NULL);
+    case GEN_KILL:   return gen_dispatch_entity_event(w, rt, f->name, world_random_entity(w));
+    case GEN_TICK:   return gen_dispatch_tick_event(w, rt, f->name, w->ticks);
+    case GEN_BLOCK:  return gen_dispatch_block_event(w, rt, f->name);
+    case GEN_ITEM:   return gen_dispatch_item_event(w, rt, f->name);
+    case GEN_ENTITY: return gen_dispatch_entity_event(w, rt, f->name, world_random_entity(w));
+    case GEN_PLAYER: return gen_dispatch_player_event(w, rt, f->name, world_random_player_id(w));
   }
   return 0;
 }
@@ -328,8 +376,8 @@ static u64 gen_dispatch_fix(mosaic_world *w, mosaic_runtime *rt, const world_fre
 u64 mosaic_world_step(mosaic_world *w, mosaic_runtime *rt, u32 n_ticks) {
   if (!w) return 0;
   u64 total = 0;
-  /* 自动补玩家(保持世界活跃):玩家数 0 → 强制 join 1(硬存活保证,不掷骰);
-     0 < 玩家 < 3 → 掷 LOW 骰,命中 → join 1(补向 ≥3) */
+  /* 自动补玩家(活跃度保证,不入抽样表):玩家数 0 → 强制 join 1(硬存活保证,
+     不掷骰);0 < 玩家 < 3 → 掷 1/1000,命中 → join 1(补向 ≥3) */
   if (w->n_players == 0) total += world_join(w, rt, NULL);
   else if (w->n_players < 3 && rng_chance(w, 1, 1000)) total += world_join(w, rt, NULL);
 
@@ -337,36 +385,18 @@ u64 mosaic_world_step(mosaic_world *w, mosaic_runtime *rt, u32 n_ticks) {
     w->ticks++;
     const u32 tick_no = w->ticks;
 
-    /* ---- LOW 档(每 tick,每事件独立抽样;rng 调用序固定,勿重排) ---- */
-    if (rng_chance(w, 1, 1000)) total += world_join(w, rt, NULL);
-    if (rng_chance(w, 1, 1000))
-      total += gen_dispatch_player_event(w, rt, "player_leave", world_random_player_id(w));
-    if (rng_chance(w, 2, 1000))   /* entity_spawn 0.2% > entity_kill 0.1%:实体缓慢增长 */
-      total += world_spawn(w, rt, rng_below(w, 16) + 1, NULL);
-    if (rng_chance(w, 1, 1000))
-      total += gen_dispatch_entity_event(w, rt, "entity_kill", world_random_entity(w));
-    if (rng_chance(w, 1, 1000)) total += gen_dispatch_tick_event(w, rt, "weather_change", tick_no);
-    if (rng_chance(w, 1, 1000)) total += gen_dispatch_tick_event(w, rt, "time_change", tick_no);
-    /* ⚠️3 修正:目录 HIGH → 生成器按 LOW(覆盖表驱动,见 g_freq_fixes) */
+    /* ---- LOW 档:表驱动(g_freq_fixes 为唯一来源;roll 序 = 表序,勿重排) ---- */
     for (u32 fi = 0; fi < (u32)(sizeof g_freq_fixes / sizeof g_freq_fixes[0]); fi++)
       if (g_freq_fixes[fi].gen_tier == MOSAIC_EV_FREQ_LOW)
-        total += gen_dispatch_fix(w, rt, &g_freq_fixes[fi], 1, 1000);
+        total += gen_dispatch_table(w, rt, &g_freq_fixes[fi]);
 
-    /* ---- MID 档(每 tick 5% 每事件) ---- */
-    if (rng_chance(w, 5, 100)) total += gen_dispatch_block_event(w, rt, "block_break");
-    if (rng_chance(w, 5, 100)) total += gen_dispatch_block_event(w, rt, "block_place");
-    if (rng_chance(w, 5, 100)) total += gen_dispatch_item_event(w, rt, "item_use");
-    if (rng_chance(w, 5, 100)) total += gen_dispatch_item_event(w, rt, "item_craft");
-    if (rng_chance(w, 5, 100))
-      total += gen_dispatch_entity_event(w, rt, "entity_damage", world_random_entity(w));
-    if (rng_chance(w, 5, 100))
-      total += gen_dispatch_player_event(w, rt, "player_chat", world_random_player_id(w));
-    /* ⚠️3 修正:目录 HIGH → 生成器按 MID(覆盖表驱动,见 g_freq_fixes) */
+    /* ---- MID 档:表驱动(每 tick 5% 每事件) ---- */
     for (u32 fi = 0; fi < (u32)(sizeof g_freq_fixes / sizeof g_freq_fixes[0]); fi++)
       if (g_freq_fixes[fi].gen_tier == MOSAIC_EV_FREQ_MID)
-        total += gen_dispatch_fix(w, rt, &g_freq_fixes[fi], 5, 100);
+        total += gen_dispatch_table(w, rt, &g_freq_fixes[fi]);
 
-    /* ---- HIGH 档:entity_tick 每存活实体 1 次(位置每 tick 游走 ±1)+ tick 1 次 ---- */
+    /* ---- HIGH 档:每 tick 全量派发(不入抽样轮;表中标注) ----
+       entity_tick 每存活实体 1 次(位置每 tick 游走 ±1)+ tick 1 次 ---- */
     for (u32 i = 0; i < w->n_entities; i++) {
       world_entity *e = &w->entities[i];
       e->x += (u32)rng_below(w, 3) - 1u;   /* -1/0/+1,u32 回绕无妨(合成世界无网格) */
