@@ -33,3 +33,8 @@ add_test(NAME test_builder COMMAND test_builder)
 add_executable(test_runtime tests/test_runtime.c)
 target_link_libraries(test_runtime mosaic_core)
 add_test(NAME test_runtime COMMAND test_runtime)
+
+add_executable(test_index tests/test_index.c)
+target_link_libraries(test_index mosaic_core)
+target_include_directories(test_index PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_index COMMAND test_index)
