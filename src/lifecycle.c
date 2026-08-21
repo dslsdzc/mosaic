@@ -54,47 +54,66 @@ static int mods_put(mosaic_runtime *rt, struct mod_entry *m) {
   return 0;
 }
 
-/* 开放寻址删除后移判定(与 working_set.c ws_remove 同一几何,见该文件注释) */
-static int mods_in_fwd_interval(u64 ideal, u64 h, u64 j, u64 mask) {
-  if (h < j) return ideal > h && ideal <= j;
-  return ideal > h || ideal <= j;
+/* ---- 延迟 dlclose(缺陷 2 修复)----
+   关键语义:哈希内条目只在 flush/close 时移除;refs 归零的条目保留为 pending
+   (.so 不卸载——自墓碑时正在执行的 .so 若被 dlclose,代码页被 unmap,返回
+   地址悬垂 → 返回即崩),因此 mods 管理没有逐条删除路径(无后移逻辑)。 */
+
+/* flush 后重建:新表容量 = 存活数 × 2(向上取 2 的幂,线性探测需要),重插活
+   条目,释放旧表。用重建替代开放寻址删除的后移逻辑——重建 O(n) 且 flush
+   罕见(只在 dispatch/evict 末尾);OOM 时保留旧表(空洞表仍可用) */
+static void mods_compact(mosaic_runtime *rt) {
+  struct mods_hash *h = &rt->mods;
+  u64 alive = 0;
+  if (h->cap)
+    for (u64 i = 0; i < h->cap; i++)
+      if (h->vals[i]) alive++;
+  if (alive == 0) {
+    free(h->keys); free(h->vals);
+    h->keys = NULL; h->vals = NULL;
+    h->cap = h->len = 0;
+    return;
+  }
+  u64 cap = 1;
+  while (cap < alive * 2) cap <<= 1;
+  u64 *keys = calloc(cap, sizeof *keys);
+  struct mod_entry **vals = calloc(cap, sizeof *vals);
+  if (!keys || !vals) { free(keys); free(vals); return; }   /* OOM:保留旧表 */
+  u64 mask = cap - 1;
+  for (u64 i = 0; i < h->cap; i++) {
+    struct mod_entry *m = h->vals[i];
+    if (!m) continue;
+    u64 j = m->module_id & mask;
+    while (keys[j]) j = (j + 1) & mask;
+    keys[j] = m->module_id; vals[j] = m;
+  }
+  free(h->keys); free(h->vals);
+  h->keys = keys; h->vals = vals; h->cap = cap;
+  h->len = alive;
 }
 
-/* 从哈希删除并把条目交给调用方(调用方负责 dlclose+free);未命中则 *out=NULL */
-static void mods_remove(mosaic_runtime *rt, u64 module_id, struct mod_entry **out) {
-  *out = NULL;
+void flush_pending_dlclose(mosaic_runtime *rt) {
   struct mods_hash *h = &rt->mods;
   if (!h->cap) return;
-  u64 mask = h->cap - 1;
-  u64 i = module_id & mask;
-  u64 found = h->cap;   /* 记录命中槽,cap 表示未命中 */
-  for (u64 n = 0; n < h->cap; n++) {
-    if (h->keys[i] == module_id) { found = i; break; }
-    if (!h->keys[i]) break;
-    i = (i + 1) & mask;
-  }
-  if (found == h->cap) return;
-  *out = h->vals[found];
-  h->keys[found] = 0; h->vals[found] = NULL;
-  h->len--;
-  /* 开放寻址删除必须后移簇内后续条目,否则簇内靠后的键会因遇到空槽而不可达
-     (经典 bug,working_set.c ws_remove 同款处理) */
-  u64 j = (found + 1) & mask;
-  while (h->keys[j]) {
-    u64 ideal = h->keys[j] & mask;
-    if (!mods_in_fwd_interval(ideal, found, j, mask)) {
-      h->keys[found] = h->keys[j];
-      h->vals[found] = h->vals[j];
-      h->keys[j] = 0; h->vals[j] = NULL;
-      found = j;
+  for (u64 i = 0; i < h->cap; i++) {
+    struct mod_entry *m = h->vals[i];
+    if (!m) continue;
+    if (m->pending) {
+      if (m->so) dlclose(m->so);
+      free(m);
+      h->keys[i] = 0; h->vals[i] = NULL;
     }
-    j = (j + 1) & mask;
   }
+  mods_compact(rt);
 }
 
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   struct mod_entry *m = mods_get(rt, module_id);
-  if (m) { m->refs++; return m->abi; }
+  if (m) {
+    if (m->pending) { m->pending = 0; m->refs = 1; return m->abi; }   /* 复活,不重新 dlopen */
+    m->refs++;
+    return m->abi;
+  }
   /* M1.5-A:find_module_ex 给出归属 pack,module_string_ex 直接读该 pack 的 meta
      (公开 module_string 的 uintptr_t 指针扫描是 implementation-defined,生命周期
      内部不依赖它) */
@@ -132,9 +151,10 @@ void mod_unload(mosaic_runtime *rt, u64 module_id) {
   struct mod_entry *m = mods_get(rt, module_id);
   if (!m) return;
   if (m->refs > 1) { m->refs--; return; }
-  mods_remove(rt, module_id, &m);
-  dlclose(m->so);
-  free(m);
+  /* refs 归零 → pending = 1,不 dlclose(可能正被自身代码执行中);.so 保持
+     加载,由下一个安全点(dispatch/evict 末尾)flush_pending_dlclose 卸载 */
+  m->refs = 0;
+  m->pending = 1;
 }
 
 /* 状态 blob 布局:[4B reserved][(u32 len, bytes) 条目...]。

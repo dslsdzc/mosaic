@@ -21,6 +21,7 @@ static u64 trigger_lower_bound(const u8 *map, u32 ev) {
    执行总数。触发条目可引用任意 pack 的函数(合并索引按 fn_id 全局解析)。 */
 u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
   if (!rt) return 0;
+  rt->dispatch_depth++;
   u32 executed = 0;
   for (size_t p = 0; p < rt->n_packs; p++) {
     u8 *map = pack_map(rt, p);
@@ -51,5 +52,10 @@ u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
       i++;
     }
   }
+  /* 缺陷 2 安全点:flush pending dlclose 只在最外层派发末尾(此时所有 execute
+     已返回,栈上无任何模块代码帧,卸载 .so 不悬垂)。mod 回调可能嵌套派发,
+     内层末尾的栈上仍压着外层回调的模块代码帧,故只减深度不 flush。 */
+  rt->dispatch_depth--;
+  if (rt->dispatch_depth == 0) flush_pending_dlclose(rt);
   return executed;
 }

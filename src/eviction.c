@@ -12,5 +12,8 @@ int mosaic_evict_idle(mosaic_runtime *rt, const mosaic_evict_config *cfg) {
     }
     f = nx;
   }
+  /* 缺陷 2 安全点:墓碑可能使模块 refs 归零进入 pending,在驱逐循环末尾统一
+     flush(此时无模块代码在栈上——驱逐自身不执行模块代码,安全) */
+  flush_pending_dlclose(rt);
   return n;
 }
