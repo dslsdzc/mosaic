@@ -43,3 +43,13 @@ add_executable(test_working_set tests/test_working_set.c)
 target_link_libraries(test_working_set mosaic_core)
 target_include_directories(test_working_set PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_working_set COMMAND test_working_set)
+
+add_library(test_mod MODULE tests/test_mod.c)
+target_include_directories(test_mod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(test_badmod MODULE tests/test_badmod.c)
+target_include_directories(test_badmod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(test_lifecycle tests/test_lifecycle.c)
+target_link_libraries(test_lifecycle mosaic_core)
+target_include_directories(test_lifecycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)  # 偏差 D-3:ws_find 断言
+add_test(NAME test_lifecycle COMMAND test_lifecycle $<TARGET_FILE:test_mod> $<TARGET_FILE:test_badmod>)
