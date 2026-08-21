@@ -7,6 +7,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_library(mosaic_core STATIC
+  src/runtime.c
   src/pack_reader.c
   src/pack_builder.c
   src/index.c
@@ -28,6 +29,10 @@ add_test(NAME test_pack COMMAND test_pack)
 add_executable(test_builder tests/test_builder.c)
 target_link_libraries(test_builder mosaic_core)
 add_test(NAME test_builder COMMAND test_builder)
+
+add_executable(test_runtime tests/test_runtime.c)
+target_link_libraries(test_runtime mosaic_core)
+add_test(NAME test_runtime COMMAND test_runtime)
 
 # 后续任务启用(先在文件中注释掉,避免缺文件编译失败):
 # add_executable(test_runtime tests/test_runtime.c)   ... 见 Task 3-9
