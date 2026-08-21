@@ -64,3 +64,19 @@ add_executable(test_ownership tests/test_ownership.c)
 target_link_libraries(test_ownership mosaic_core)
 target_include_directories(test_ownership PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_ownership COMMAND test_ownership $<TARGET_FILE:test_mod>)
+
+# ---- bench:10M synth universe + S1-S4 gate runner (Task 10) ----
+add_library(synth_mod MODULE bench/synth_abi.c)
+target_include_directories(synth_mod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# 偏差:CMake 默认把 MODULE 库放 build/ 根目录且带 lib 前缀、可执行放 build/ 根,
+# 而 bench_runner 默认 so 路径为 build/bench/synth_mod.so、简报 Step 6 命令为
+# build/bench/bench_runner(简报 Step 4/6);对齐输出目录与文件名使原样命令可用
+set_target_properties(synth_mod PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench
+  PREFIX "")
+
+add_executable(bench_runner bench/bench_runner.c bench/synth_universe.c)
+target_include_directories(bench_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+target_link_libraries(bench_runner mosaic_core m dl)
+set_target_properties(bench_runner PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench)

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>   /* ftruncate(D-10-3:文件映射扩容先撑文件) */
 
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   for (struct mod_entry *m = rt->mods; m; m = m->next)
@@ -20,11 +21,13 @@ const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   if (e) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
   const mosaic_module_abi *abi = sym();
   if (abi->abi_version != MOSAIC_MODULE_ABI_VERSION) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
-  /* 偏差 D-5:计划原文用 == 校验,但代码表是 code_off 槽位表,pack 可声明少量函数
-     复用同一模块的少数槽位(计划自身测试:test_mod.so 3 槽配 1/2 函数 pack);
-     == 会误杀合法 pack。改为:导出槽位数少于声明函数数 → 必有一函数越界 → 拒绝;
-     单函数越界仍由 materialize 的 co >= fn_count 惰性校验兜底。 */
-  if (abi->fn_count < mm_fn_count(rec)) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
+  /* 偏差 D-5 + 修正 D-10-1:计划原文用 == 校验,Task 6 改 <(导出槽位数少于声明
+     函数数 → 必有一函数越界 → 拒绝)。但代码表是 code_off 槽位表,Task 10 合成
+     宇宙设计明确"10M 函数共享 3 个代码入口"(模块 10 函数/冷包 1000 函数,code_off
+     均 ∈ [0,3)),声明函数数可以大于导出槽位数;< 校验会误杀合法共享槽位 pack。
+     故移除该急切校验,越界一律由 materialize 的 co >= fn_count 惰性校验兜底
+     (test_lifecycle test_tombstone_illegal_transitions code_off=5 仍被拒)。 */
+  (void)rec;
   struct mod_entry *m = calloc(1, sizeof *m);
   if (!m) { dlclose(so); rt->last_err = MOSAIC_ERR_NOMEM; return NULL; }
   m->module_id = module_id; m->so = so; m->abi = abi; m->refs = 1;
@@ -56,10 +59,14 @@ int state_blob_append(mosaic_runtime *rt, const void *bytes, u32 len, u32 *out_o
   u64 used = rt->state_len;
   u64 pos = used == 0 ? 4 : used;
   if (pos + 4ull + len > cap) {
-    /* 扩容:mremap 翻倍 */
+    /* 扩容:mremap 翻倍(修正 D-10-3:文件映射越过 EOF 的页写入会 SIGBUS,
+       必须先 ftruncate 撑大文件,再 mremap 扩 VMA;只读 fd 上 ftruncate 失败
+       走 NOMEM 优雅降级。mremap 仍可能整体搬家,调用方须在 append 后重取
+       记录指针——I-1 修复已覆盖本函数自身,D-10-2 覆盖其他对象的缓存 rec) */
     u64 newcap = cap ? cap * 2 : 4096;
     while (newcap < pos + 4ull + len) newcap *= 2;
     size_t newlen = base + newcap;
+    if (ftruncate(rt->fd, (off_t)newlen) != 0) { rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
     void *np = mremap(rt->map, rt->map_len, newlen, MREMAP_MAYMOVE);
     if (np == MAP_FAILED) { rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
     rt->map = np; rt->map_len = newlen;
@@ -134,15 +141,17 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
 }
 
 /* 偏差 D-1:Task 6 测试(test_lifecycle.c)依赖 execute/tombstone,但计划把二者
-   分派给 Task 7;此处按计划 Task 7 原文提前落地,Task 7 将仅追加测试。 */
-
-void mosaic_fn_execute(mosaic_fn_obj *fn, u32 event_id, const void *event) {
-  /* 热路径:零检查,直接调用 */
-  fn->code(fn->state, event_id, event);
-}
+   分派给 Task 7;此处按计划 Task 7 原文提前落地,Task 7 将仅追加测试。
+   D-10-4:execute 移入 function.h 为 static inline(热路径零开销),定义见头文件。 */
 
 int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
   if (!rt || !fn) { if (rt) rt->last_err = MOSAIC_ERR_ILLEGAL; return -1; }
+  /* 修正 D-10-2:state_blob_append 的 mremap(MREMAP_MAYMOVE)可能移动整个 pack
+     映射,使其他 fn 对象缓存的 rec 指针悬垂(Task 10 S2 冷包 1000 函数逐批墓碑
+     实测 SIGSEGV——I-1 修复只重取了本函数自己的 rw,未保护其他对象的 rec)。
+     与 I-1 同一模式:入口按 fn_id 重取记录,后续全部使用新鲜指针。 */
+  fn->rec = mosaic_runtime_find_function(rt, fn->fn_id);
+  if (!fn->rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return -1; }
   u16 fl = mf_flags(fn->rec);
   u8 st = (u8)(fl & MOSAIC_FN_STATE_MASK);
   if (st != MOSAIC_FN_STATE_ACTIVE) { rt->last_err = MOSAIC_ERR_ILLEGAL; return -1; }

@@ -36,7 +36,11 @@ static int validate_layout(mosaic_runtime *rt, char *errbuf, size_t errlen) {
 }
 
 mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t errlen) {
-  int fd = open(pack_path, O_RDONLY);
+  /* 修正 D-10-3:state_blob_append 需要 ftruncate 扩容文件再 mremap(否则写入
+     越过文件末页 → SIGBUS);先试 O_RDWR,只读 pack 回退 O_RDONLY(此时有状态
+     写入的墓碑会走 NOMEM 错误路径优雅失败,纯查询不受影响)。 */
+  int fd = open(pack_path, O_RDWR);
+  if (fd < 0) fd = open(pack_path, O_RDONLY);
   if (fd < 0) { if (errbuf && errlen) snprintf(errbuf, errlen, "open %s failed", pack_path); return NULL; }
   struct stat st;
   if (fstat(fd, &st) != 0 || st.st_size < HDR_SIZE) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "pack too small"); return NULL; }
