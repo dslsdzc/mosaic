@@ -3,7 +3,8 @@
 #include "mosaic/base.h"
 
 #define MOSAIC_PACK_MAGIC   0x41534F4Du  /* "MOSA" LE */
-#define MOSAIC_PACK_VERSION 2   /* v2:event_names 表按名排序(二分查找前提),触发器 event_id 为排序位置 */
+#define MOSAIC_PACK_VERSION 3   /* v2:event_names 表按名排序(二分查找前提),触发器 event_id 为排序位置;
+                                   v3:item 描述表(按 (category,name) 排序),查询返回 mmap 描述符不物化 */
 
 /* ---- Pack header (256B, LE) ---- */
 enum {
@@ -13,6 +14,7 @@ enum {
   HDR_STATE_OFF = 72, HDR_STATE_CAP = 80, HDR_STATE_LEN = 88,
   HDR_META_OFF = 96, HDR_META_LEN = 104,
   HDR_EVENT_COUNT = 112, HDR_EVENT_NAMES_OFF = 120,
+  HDR_ITEM_OFF = 144, HDR_ITEM_COUNT = 152,   /* 128..144 保留(M2-4:v3 item 描述表) */
   HDR_SIZE = 256
 };
 static inline u32 hdr_magic(const u8 *h) { return rd_le32(h + HDR_MAGIC); }
@@ -32,6 +34,8 @@ static inline u64 hdr_meta_off(const u8 *h) { return rd_le64(h + HDR_META_OFF); 
 static inline u64 hdr_meta_len(const u8 *h) { return rd_le64(h + HDR_META_LEN); }
 static inline u32 hdr_event_count(const u8 *h) { return rd_le32(h + HDR_EVENT_COUNT); }
 static inline u64 hdr_event_names_off(const u8 *h) { return rd_le64(h + HDR_EVENT_NAMES_OFF); }
+static inline u64 hdr_item_off(const u8 *h) { return rd_le64(h + HDR_ITEM_OFF); }
+static inline u64 hdr_item_count(const u8 *h) { return rd_le64(h + HDR_ITEM_COUNT); }
 static inline void hdr_set_module_count(u8 *h, u64 v) { wr_le64(h + HDR_MODULE_COUNT, v); }
 static inline void hdr_set_fn_count(u8 *h, u64 v) { wr_le64(h + HDR_FN_COUNT, v); }
 static inline void hdr_set_trigger_count(u8 *h, u64 v) { wr_le64(h + HDR_TRIGGER_COUNT, v); }
@@ -47,6 +51,8 @@ static inline void hdr_set_meta_off(u8 *h, u64 v) { wr_le64(h + HDR_META_OFF, v)
 static inline void hdr_set_meta_len(u8 *h, u64 v) { wr_le64(h + HDR_META_LEN, v); }
 static inline void hdr_set_event_count(u8 *h, u32 v) { wr_le32(h + HDR_EVENT_COUNT, v); }
 static inline void hdr_set_event_names_off(u8 *h, u64 v) { wr_le64(h + HDR_EVENT_NAMES_OFF, v); }
+static inline void hdr_set_item_off(u8 *h, u64 v) { wr_le64(h + HDR_ITEM_OFF, v); }
+static inline void hdr_set_item_count(u8 *h, u64 v) { wr_le64(h + HDR_ITEM_COUNT, v); }
 
 /* ---- FunctionRecord (48B) ---- */
 /* FN_OFF_RSVD(44,最后 4B):transform 索引槽(0=无,否则 abi->transforms[reserved-1]);
@@ -146,6 +152,29 @@ static inline u32 mn_off(const mosaic_event_name *n) { return rd_le32(n->bytes +
 static inline u32 mn_len(const mosaic_event_name *n) { return rd_le32(n->bytes + MN_OFF_LEN); }
 static inline void mn_set(mosaic_event_name *n, u32 off, u32 len) { wr_le32(n->bytes + MN_OFF_OFF, off); wr_le32(n->bytes + MN_OFF_LEN, len); }
 
+/* ---- ItemRecord (32B):创造模式 Item 描述符(M2-4,v3) ----
+   纯冷态记录,查询只读 mmap 返回指向本结构的描述符指针,不触发 dlopen/物化;
+   唯一物化路径是应用侧把 provider fn_id 交给 mosaic_fn_materialize。
+   表按 (category, name) 排序(长度感知比较,与事件表同款纪律);名字在分类内互异。 */
+enum { IT_OFF_PROVIDER = 0, IT_OFF_NAME = 8, IT_OFF_TAGS = 12, IT_OFF_CATEGORY = 16,
+       IT_OFF_ICON = 20, IT_OFF_FLAGS = 24, IT_OFF_RSVD = 28, IT_SIZE = 32 };
+typedef struct { u8 bytes[IT_SIZE]; } mosaic_item_record;
+/* provider: u64 fn_id(物化该函数获得 Item 运行时对象)
+   name/tags/icon: meta blob 字符串偏移(0 = 无)
+   category: u32 创造分类 id(0 = 默认) */
+static inline u64 mi_provider(const mosaic_item_record *r) { return rd_le64(r->bytes + IT_OFF_PROVIDER); }
+static inline u32 mi_name_off(const mosaic_item_record *r) { return rd_le32(r->bytes + IT_OFF_NAME); }
+static inline u32 mi_tags_off(const mosaic_item_record *r) { return rd_le32(r->bytes + IT_OFF_TAGS); }
+static inline u32 mi_category(const mosaic_item_record *r) { return rd_le32(r->bytes + IT_OFF_CATEGORY); }
+static inline u32 mi_icon_off(const mosaic_item_record *r) { return rd_le32(r->bytes + IT_OFF_ICON); }
+static inline u32 mi_flags(const mosaic_item_record *r) { return rd_le32(r->bytes + IT_OFF_FLAGS); }
+static inline void mi_set_provider(mosaic_item_record *r, u64 v) { wr_le64(r->bytes + IT_OFF_PROVIDER, v); }
+static inline void mi_set_name_off(mosaic_item_record *r, u32 v) { wr_le32(r->bytes + IT_OFF_NAME, v); }
+static inline void mi_set_tags_off(mosaic_item_record *r, u32 v) { wr_le32(r->bytes + IT_OFF_TAGS, v); }
+static inline void mi_set_category(mosaic_item_record *r, u32 v) { wr_le32(r->bytes + IT_OFF_CATEGORY, v); }
+static inline void mi_set_icon_off(mosaic_item_record *r, u32 v) { wr_le32(r->bytes + IT_OFF_ICON, v); }
+static inline void mi_set_flags(mosaic_item_record *r, u32 v) { wr_le32(r->bytes + IT_OFF_FLAGS, v); }
+
 /* ---- Pack builder ---- */
 typedef struct mosaic_pack_builder mosaic_pack_builder;
 
@@ -161,6 +190,13 @@ void mosaic_pack_builder_add_dep(mosaic_pack_builder *b, u64 owner_id, u64 dep_i
 /* 给已 add 的函数设置状态迁移索引(0 = 无;>0 = abi->transforms[idx-1]);
    线性扫描 fn 记录(补丁 pack 通常很小);fn_id 不存在 → 返回 -1 + 不置 err */
 int mosaic_pack_builder_set_fn_transform(mosaic_pack_builder *b, u64 fn_id, u32 transform_index);
+/* M2-4(v3):item 描述表。create 的既有签名不含 item——item 用独立设置器:
+   set_item_count 在第一个 add_item 之前调用(0 成功;-1 = 空 builder / 已设置 /
+   已 add 条目 / 分配失败);add_item 的 name/tags/icon 进 meta blob(NULL = 无),
+   finish 按 (category, name) 排序,分类内重名拒绝 "duplicate item name"。 */
+int mosaic_pack_builder_set_item_count(mosaic_pack_builder *b, u64 item_count);
+void mosaic_pack_builder_add_item(mosaic_pack_builder *b, u64 provider_fn_id, const char *name,
+                                  const char *tags, u32 category, const char *icon_ref, u32 flags);
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen);
 void mosaic_pack_builder_free(mosaic_pack_builder *b);
 #endif

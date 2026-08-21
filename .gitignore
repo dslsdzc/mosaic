@@ -14,6 +14,7 @@ bench/*.pack
 .vscode/
 .idea/
 *.swp
-# ASan/UBSan and debug build dirs
+# ASan/UBSan, TSan and debug build dirs
 build-asan/
 build-dbg/
+build-tsan/

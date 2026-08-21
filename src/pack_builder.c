@@ -16,6 +16,9 @@ struct mosaic_pack_builder {
   mosaic_trigger_entry *triggers;
   mosaic_dep_entry *deps;
   mosaic_event_name *event_names;
+  /* M2-4(v3):item 描述表(item_count 由 set_item_count 声明,create 签名不含) */
+  u64 item_count, item_cursor;
+  mosaic_item_record *items;
   char *meta; size_t meta_len, meta_cap;
   int failed;
 };
@@ -29,6 +32,9 @@ static void builder_err(char *errbuf, size_t errlen, const char *fmt, ...) {
 
 static char *meta_add(mosaic_pack_builder *b, const char *s) {
   size_t n = strlen(s) + 1;
+  if (b->meta_len == 0) b->meta_len += 1;  /* M2-4:跳过首字节(保留 NUL)——偏移 0 =
+                                              "无" 哨兵,不承载真实串;首个字符串
+                                              从 1 起(对既有读方透明,只移 1 字节) */
   if (b->meta_len + n > b->meta_cap) {
     size_t cap = b->meta_cap ? b->meta_cap * 2 : 4096;
     while (cap < b->meta_len + n) cap *= 2;
@@ -116,6 +122,38 @@ void mosaic_pack_builder_add_dep(mosaic_pack_builder *b, u64 owner_id, u64 dep_i
   md_set_dep(d, dep_id);
 }
 
+/* M2-4(v3):item 表声明。create 的既有签名不动(item 属 M2-4 增量),用独立
+   设置器在 add_item 之前声明条目数;已设置或已有条目 → -1(调用顺序错误)。 */
+int mosaic_pack_builder_set_item_count(mosaic_pack_builder *b, u64 item_count) {
+  if (!b || b->failed) return -1;
+  if (b->items || b->item_cursor) return -1;
+  if (item_count) {
+    b->items = calloc(item_count, sizeof *b->items);
+    if (!b->items) { b->failed = 1; return -1; }
+  }
+  b->item_count = item_count;
+  return 0;
+}
+
+void mosaic_pack_builder_add_item(mosaic_pack_builder *b, u64 provider_fn_id, const char *name,
+                                  const char *tags, u32 category, const char *icon_ref, u32 flags) {
+  if (!b || b->failed) return;
+  if (b->item_cursor >= b->item_count) { b->failed = 1; return; }
+  mosaic_item_record *it = &b->items[b->item_cursor++];
+  mi_set_provider(it, provider_fn_id);
+  mi_set_category(it, category);
+  mi_set_flags(it, flags);
+  /* name/tags/icon 进 meta blob(0 = 无)。偏移在每次 meta_add 后立即捕获——
+     realloc 会移动缓冲,指针不可跨调用持有(与 add_module 同款纪律)。 */
+  u32 noff = 0, toff = 0, ioff = 0;
+  if (name) { char *p = meta_add(b, name); if (!p) return; noff = (u32)(p - b->meta); }
+  if (tags) { char *p = meta_add(b, tags); if (!p) return; toff = (u32)(p - b->meta); }
+  if (icon_ref) { char *p = meta_add(b, icon_ref); if (!p) return; ioff = (u32)(p - b->meta); }
+  mi_set_name_off(it, noff);
+  mi_set_tags_off(it, toff);
+  mi_set_icon_off(it, ioff);
+}
+
 /* M2-2a:给已 add 的函数设置状态迁移索引(0 = 无;>0 = abi->transforms[idx-1])。
    线性扫描 fn 记录(补丁 pack 通常很小);fn_id 不存在 → 返回 -1 + 不置 err
    (不置 b->failed:设置器语义是可选附加,漏设不改写记录)。finish 的 qsort
@@ -174,6 +212,22 @@ static int ev_cmp(mosaic_pack_builder *b, const mosaic_event_name *x, const mosa
   return (int)lx - (int)ly;
 }
 
+/* M2-4(v3):item 表按 (category, name) 排序。名字是 meta blob 内 NUL 结尾串,
+   比较需要 meta 基址(上下文),而 qsort 比较器无上下文 → 用伴随结构
+   (cat, name 指针)排序,再把记录按序写回。名字用同事件表的长度感知比较
+   (与运行时二分同一语义,前缀对 "sword"/"sword_iron" 不会误匹配);
+   name_off == 0(无名字)按空串处理,排任何真实名字之前。 */
+typedef struct { u32 cat; const char *name; mosaic_item_record rec; } item_sort_ent;
+static int it_sort_cmp(const void *a, const void *b_) {
+  const item_sort_ent *x = a, *y = b_;
+  if (x->cat != y->cat) return x->cat < y->cat ? -1 : 1;
+  size_t lx = strlen(x->name), ly = strlen(y->name);
+  size_t c = lx < ly ? lx : ly;
+  int r = memcmp(x->name, y->name, c);
+  if (r) return r;
+  return (int)lx - (int)ly;
+}
+
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen) {
   if (!b) { builder_err(errbuf, errlen, "null builder"); return -1; }
   if (b->event_count > MOSAIC_MAX_EVENTS) {
@@ -184,7 +238,8 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
   }
   if (b->failed || b->mod_cursor != b->module_count || b->fn_cursor != b->fn_count ||
       b->trig_cursor != b->trigger_count || b->dep_cursor != b->dep_count ||
-      b->event_cursor != b->event_count) {
+      b->event_cursor != b->event_count ||
+      b->item_cursor != b->item_count) {
     builder_err(errbuf, errlen, "record count mismatch (fill before finish)");
     return -1;
   }
@@ -225,6 +280,26 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
     mt_set_event(&b->triggers[k], reg_to_sorted[old]);
   }
 
+  /* M2-4(v3):item 表按 (category, name) 排序;排序后相邻重名(同分类同名字)
+     拒绝——二分查找要求分类内名字唯一 */
+  if (b->item_count) {
+    item_sort_ent *ents = malloc((size_t)b->item_count * sizeof *ents);
+    if (!ents) { builder_err(errbuf, errlen, "oom"); return -1; }
+    for (u64 i = 0; i < b->item_count; i++) {
+      ents[i].cat = mi_category(&b->items[i]);
+      ents[i].name = mi_name_off(&b->items[i]) ? b->meta + mi_name_off(&b->items[i]) : "";
+      ents[i].rec = b->items[i];
+    }
+    qsort(ents, (size_t)b->item_count, sizeof *ents, it_sort_cmp);
+    for (u64 i = 1; i < b->item_count; i++)
+      if (it_sort_cmp(&ents[i - 1], &ents[i]) == 0) {
+        builder_err(errbuf, errlen, "duplicate item name");
+        free(ents);
+        return -1;
+      }
+    for (u64 i = 0; i < b->item_count; i++) b->items[i] = ents[i].rec;
+    free(ents);
+  }
   qsort(b->mods, (size_t)b->module_count, sizeof *b->mods, cmp_mod);
   qsort(b->fns, (size_t)b->fn_count, sizeof *b->fns, cmp_fn);
   qsort(b->triggers, (size_t)b->trigger_count, sizeof *b->triggers, cmp_trig);
@@ -263,7 +338,9 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
   u64 off_deps = off_trig + (u64)b->trigger_count * MT_SIZE;
   u64 off_meta = off_deps + (u64)b->dep_count * MD_SIZE;
   u64 off_events = off_meta + (u64)b->meta_len;
-  u64 off_state = off_events + (u64)b->event_count * MN_SIZE;
+  /* M2-4(v3):item 表插在 event_names 与 state 之间 */
+  u64 off_items = off_events + (u64)b->event_count * MN_SIZE;
+  u64 off_state = off_items + (u64)b->item_count * IT_SIZE;
   u64 file_size = off_state; /* 状态 blob 初始为空 */
 
   FILE *f = fopen(b->path, "wb");
@@ -279,6 +356,8 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
   hdr_set_trigger_off(hdr, off_trig); hdr_set_dep_off(hdr, off_deps);
   hdr_set_meta_off(hdr, off_meta); hdr_set_meta_len(hdr, (u64)b->meta_len);
   hdr_set_event_count(hdr, b->event_count); hdr_set_event_names_off(hdr, off_events);
+  /* 空 item 表也写合法位置(off 任意,count=0 时运行时不读表) */
+  hdr_set_item_off(hdr, off_items); hdr_set_item_count(hdr, b->item_count);
   hdr_set_state_off(hdr, off_state); hdr_set_state_cap(hdr, 0); hdr_set_state_len(hdr, 0);
 
   int rc = 0;
@@ -289,6 +368,7 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
   if (!rc && b->dep_count && fwrite(b->deps, sizeof *b->deps, (size_t)b->dep_count, f) != b->dep_count) rc = -1;
   if (!rc && b->meta_len && fwrite(b->meta, 1, b->meta_len, f) != b->meta_len) rc = -1;
   if (!rc && b->event_count && fwrite(b->event_names, sizeof *b->event_names, (size_t)b->event_count, f) != b->event_count) rc = -1;
+  if (!rc && b->item_count && fwrite(b->items, sizeof *b->items, (size_t)b->item_count, f) != b->item_count) rc = -1;
   if (!rc) {
     if (fflush(f) != 0) rc = -1;
     if (fsync(fileno(f)) != 0) rc = -1;
@@ -301,5 +381,5 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
 void mosaic_pack_builder_free(mosaic_pack_builder *b) {
   if (!b) return;
   free(b->path); free(b->mods); free(b->fns); free(b->triggers);
-  free(b->deps); free(b->event_names); free(b->meta); free(b);
+  free(b->deps); free(b->event_names); free(b->items); free(b->meta); free(b);
 }

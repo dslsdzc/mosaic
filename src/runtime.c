@@ -24,6 +24,7 @@ int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
   u64 soff = hdr_state_off(h), scap = hdr_state_cap(h), slen = hdr_state_len(h);
   u64 meoff = hdr_meta_off(h), melen = hdr_meta_len(h);
   u64 eoff = hdr_event_names_off(h), ec = hdr_event_count(h);
+  u64 itoff = hdr_item_off(h), ic = hdr_item_count(h);
   /* 每表:偏移本身必须 ≤ map_len;count×size 用除法防 u64 回绕 */
   if (moff > map_len || mc > (map_len - moff) / MM_SIZE ||
       foff > map_len || fc > (map_len - foff) / FN_SIZE ||
@@ -31,6 +32,8 @@ int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
       doff > map_len || dc > (map_len - doff) / MD_SIZE ||
       meoff > map_len || melen > map_len - meoff ||
       eoff > map_len || ec > (map_len - eoff) / MN_SIZE ||
+      /* M2-4(v3):item 表边界(off + count*IT_SIZE ≤ map_len) */
+      itoff > map_len || ic > (map_len - itoff) / IT_SIZE ||
       soff > map_len || scap > map_len - soff || slen > scap) {
     set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "offset out of bounds");
     return -1;

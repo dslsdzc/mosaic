@@ -12,6 +12,7 @@ add_library(mosaic_core STATIC
   src/runtime.c
   src/pack_reader.c
   src/pack_builder.c
+  src/descriptor.c
   src/index.c
   src/working_set.c
   src/lifecycle.c
@@ -126,3 +127,9 @@ add_executable(test_sched tests/test_sched.c)
 target_link_libraries(test_sched mosaic_core)
 target_include_directories(test_sched PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_sched COMMAND test_sched $<TARGET_FILE:test_mod>)
+
+# M2-4:item 描述符表(v3)+ 冷态查询(纯记录读取,零 dlopen → 无需 test_mod;
+# 不物化验证用不存在 so 路径 + 物化 ABI 失败自证)
+add_executable(test_descriptor tests/test_descriptor.c)
+target_link_libraries(test_descriptor mosaic_core)
+add_test(NAME test_descriptor COMMAND test_descriptor)
