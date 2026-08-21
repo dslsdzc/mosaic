@@ -181,10 +181,14 @@ static mosaic_task *wq_pop(sched_worker *w) {
 static void wq_remove(sched_worker *w, mosaic_task *t) {
   pthread_mutex_lock(&w->lock);
   mosaic_task **pp = &w->q_head;
-  while (*pp && *pp != t) pp = &(*pp)->queue_next;
+  mosaic_task *prev = NULL;   /* 扫描中 t 的前驱(摘队尾时重定位 q_tail 用) */
+  while (*pp && *pp != t) { prev = *pp; pp = &(*pp)->queue_next; }
   if (*pp) {
     *pp = t->queue_next;
-    if (w->q_tail == t) w->q_tail = NULL;
+    if (w->q_tail == t) w->q_tail = prev;   /* M2 遗留修复:摘除队尾后 q_tail
+       必须重定位到新的队尾(链表前驱;NULL = 队列已空)——旧代码置 NULL 而
+       队列非空,违反 "q_tail==NULL ⟺ 空" 不变式,后续 wq_push 走 else 分支
+       覆盖 q_head,整条队列入队任务丢失 */
   }
   pthread_mutex_unlock(&w->lock);
 }
@@ -261,11 +265,22 @@ static void run_task(mosaic_sched *s, mosaic_task *t) {
   pthread_mutex_unlock(&s->lock);
   if (was_cancelled && t->checkpoint) t->checkpoint(t, t->checkpoint_ctx);
 
+  /* M2 遗留修复(TOCTOU):落终态时(持锁)**重读** t->cancelled——fn 返回后到
+     本处之间 cancel 随时可能到达(窗口含 checkpoint 时长),若仍按首次读取的
+     was_cancelled 落 DONE,与 cancel() 契约不符(运行中取消的任务必须以
+     CANCELLED 收尾并计入 cancelled_total,wait_all 返回取消数才正确)。
+     重读置位时按 CANCELLED 落终态并计数(checkpoint 未调用可接受:取消落在
+     checkpoint 决策之后,checkpoint 是尽力而为)。 */
   pthread_mutex_lock(&s->lock);
-  t->state = was_cancelled ? TASK_CANCELLED : TASK_DONE;
-  if (was_cancelled) s->cancelled_total++;
+  int cancelled = t->cancelled;
+  if (cancelled) {
+    t->state = TASK_CANCELLED;
+    s->cancelled_total++;
+  } else {
+    t->state = TASK_DONE;
+  }
   s->completed++;
-  finish_notify(s, t, was_cancelled);
+  finish_notify(s, t, cancelled);
   pthread_cond_broadcast(&s->cv);
   pthread_mutex_unlock(&s->lock);
 }

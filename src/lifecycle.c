@@ -100,7 +100,14 @@ static void mods_compact(mosaic_runtime *rt) {
    refs==0(纯缓存/pending)→ 立即置 pending,flush 收尾;refs>0(旧 .so 仍
    有活对象,其代码可能正在栈上)→ 由 mod_unload 递减,归零置 pending,
    flush_pending_dlclose 收尾 dlclose。与延迟 dlclose 同一纪律:commit 若从
-   模块代码内发起(重入),立即 dlclose 会使返回地址悬垂 → 返回即崩。 */
+   模块代码内发起(重入),立即 dlclose 会使返回地址悬垂 → 返回即崩。
+   M2 遗留补注(记账语义):失效后同模块可能被重新加载(新 .so 重新入哈希,
+   如 rollback 后按 base 记录 so_path 重 dlopen、或下一补丁 commit)。此时
+   mod_unload 先查哈希、命中**新条目**递减其 refs——链上旧条目的 refs 是
+   失效时刻的冻结快照,不再随哈希新条目的 unload 递减;refs>0 的旧条目
+   永不置 pending,flush 不摘,旧 .so 驻留至 close 才统一 dlclose。无 UAF
+   (旧 .so 一直保持映射,旧代码指针全部有效),仅驻留延长(可接受:旧 .so
+   是历史版本,close 前不卸载无正确性问题)。 */
 void mods_invalidate(mosaic_runtime *rt, u64 module_id) {
   struct mods_hash *h = &rt->mods;
   if (!h->cap) return;

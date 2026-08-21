@@ -48,6 +48,7 @@ static const char *V3_PATH;    /* test_mod_v3(+13 / transform ×10) */
 
 #define A_ID (10ull << 32)
 #define B_ID ((10ull << 32) | 1)
+#define D_ID ((10ull << 32) | 2)   /* rollback 缓存失效回归:base 记录 code_off 4 */
 
 #define FN_FLAGS (MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE)
 
@@ -64,6 +65,28 @@ static int build_base(void) {
   int rc = mosaic_pack_builder_finish(b, err, sizeof err);
   mosaic_pack_builder_free(b);
   if (rc) fprintf(stderr, "build base: %s\n", err);
+  return rc;
+}
+
+/* rollback 缓存失效回归专用 base:模块 10 三个函数——A/B 同 build_base
+   (code_off 0),D 的 base 记录 code_off 4(test_mod 在该槽位是 code_v2inc
+   +2;补丁 .so test_mod_v2 同槽位是 v2inc7 +7)——rollback 后物化 D 的首次
+   执行即判别 mods 缓存是否已被失效(两 .so 只在 code_off 4 行为不同,
+   A 的 code_off 0 两 .so 行为一致无法区分)。 */
+static int build_base_rb(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(BASE_PATH, 1, 3, 2, 0, 2);
+  mosaic_pack_builder_add_event(b, "player_join");
+  mosaic_pack_builder_add_event(b, "block_break");
+  mosaic_pack_builder_add_module(b, 10, 1, "mod_10", SO_PATH);
+  mosaic_pack_builder_add_fn(b, 10, 0, 0 /* code_inc */, 64, 1, 0, FN_FLAGS);
+  mosaic_pack_builder_add_fn(b, 10, 1, 0 /* code_inc */, 64, 1, 0, FN_FLAGS);
+  mosaic_pack_builder_add_fn(b, 10, 2, 4 /* code_v2inc */, 64, 1, 0, FN_FLAGS);
+  mosaic_pack_builder_add_trigger(b, 0, A_ID);
+  mosaic_pack_builder_add_trigger(b, 0, B_ID);
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  mosaic_pack_builder_free(b);
+  if (rc) fprintf(stderr, "build base_rb: %s\n", err);
   return rc;
 }
 
@@ -486,6 +509,67 @@ static void test_tx_commit_invalidates_mods(void) {
   mosaic_runtime_close(rt);
 }
 
+/* ---- 7b. M2 遗留修复回归:rollback(demote)必须使补丁模块的 mods 缓存失效。
+     修复前:rollback 后缓存仍持有补丁 .so(test_mod_v2)的 abi,base 路由的
+     物化以 **base 记录 code_off** 执行补丁 .so 代码。A 的 base 记录
+     code_off 0(两 .so 的 code_inc 行为一致,无法区分),故 base 另设 fn D
+     (code_off 4):test_mod 该槽位 = code_v2inc(+2)、test_mod_v2 = v2inc7
+     (+7)——rollback 后物化 D 的首次执行即暴露缓存是否失效。修复后重新
+     dlopen base so(test_mod)→ +2 = 2;修复前缓存命中补丁 so → +7 = 7
+     (断言 2 != 7 区分)。A 侧数值(3/30/37/4)与 I-1 回归一致。 ---- */
+static void test_tx_rollback_invalidates_mods(void) {
+  char err[256];
+  MT_CHECK(build_base_rb() == 0);
+  MT_CHECK(build_patch_inv() == 0);
+  mosaic_runtime *rt = mosaic_runtime_open(BASE_PATH, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  /* v1:物化 A ×3 → 3,墓碑(状态 3 进 base blob;mods 缓存加载 test_mod) */
+  mosaic_fn_obj *f = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(f != NULL);
+  if (!f) { mosaic_runtime_close(rt); return; }
+  for (int i = 0; i < 3; i++) mosaic_fn_execute(f, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)f->state, 3);
+  MT_CHECK(mosaic_fn_tombstone(rt, f) == 0);
+  /* 补丁1(so=test_mod_v2,gen2,code_off 4 = +7,transform ×10) */
+  mosaic_tx *tx = mosaic_tx_begin(rt, PATCH_INV_PATH, err, sizeof err);
+  MT_CHECK(tx != NULL);
+  if (!tx) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx, err, sizeof err) == 0);
+  /* commit 的 quiesce 已墓碑 f;物化 A → 迁移 3 ×10 = 30;执行 → 37
+     (补丁记录 code_off 4 → test_mod_v2 +7);缓存:module 10 → test_mod_v2 */
+  mosaic_fn_obj *a = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a != NULL);
+  if (!a) { mosaic_tx_free(tx); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a->state, 30);
+  mosaic_fn_execute(a, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a->state, 37);
+  MT_CHECK(mosaic_fn_tombstone(rt, a) == 0);
+  /* rollback = demote:路由回 base、补丁 pack 撤除、mods 缓存必须失效 */
+  MT_CHECK(mosaic_tx_rollback(tx, err, sizeof err) == 0);
+  mosaic_tx_free(tx);
+  /* v1 恢复:物化 A → base blob 3;执行 → 4(base 记录 code_off 0 → code_inc) */
+  mosaic_fn_obj *v1 = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(v1 != NULL);
+  if (!v1) { mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)v1->state, 3);
+  mosaic_fn_execute(v1, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)v1->state, 4);
+  MT_CHECK(mosaic_fn_tombstone(rt, v1) == 0);
+  /* 判别:物化 base 路由的 D(base 记录 code_off 4)。修复后:缓存已失效 →
+     mod_load 按 base 记录 so_path 重新 dlopen test_mod → code_v2inc(+2)= 2;
+     修复前:缓存命中补丁 .so test_mod_v2 → v2inc7(+7)= 7。断言 2 != 7。 */
+  mosaic_fn_obj *d = mosaic_fn_materialize(rt, D_ID);
+  MT_CHECK(d != NULL);
+  if (!d) { mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)d->state, 0);
+  mosaic_fn_execute(d, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)d->state, 2);
+  MT_CHECK(mosaic_fn_tombstone(rt, d) == 0);
+  mosaic_runtime_close(rt);
+}
+
 /* ---- 8. I-2 回归:多补丁下 find_module_active 必须解析到**最新**补丁的
      so_path。修复前顺序扫描 tx_packs 返回 patch1 记录(so=test_mod_v2)→
      执行 +7 = 177;修复后反向扫描返回 patch2 记录(so=test_mod_v3)→
@@ -556,6 +640,7 @@ int main(int argc, char **argv) {
   MT_RUN(test_commit_then_immediate_demote);
   MT_RUN(test_tx_multi_commit_migration);
   MT_RUN(test_tx_commit_invalidates_mods);
+  MT_RUN(test_tx_rollback_invalidates_mods);
   MT_RUN(test_tx_multi_patch_latest_so);
   return MT_RESULT() ? 0 : 1;
 }

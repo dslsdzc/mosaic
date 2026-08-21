@@ -300,10 +300,13 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
     for (u64 i = 0; i < b->item_count; i++) b->items[i] = ents[i].rec;
     free(ents);
   }
-  qsort(b->mods, (size_t)b->module_count, sizeof *b->mods, cmp_mod);
-  qsort(b->fns, (size_t)b->fn_count, sizeof *b->fns, cmp_fn);
-  qsort(b->triggers, (size_t)b->trigger_count, sizeof *b->triggers, cmp_trig);
-  qsort(b->deps, (size_t)b->dep_count, sizeof *b->deps, cmp_dep);
+  /* M2 遗留修复:空表时基址为 NULL——C11 严格语义下 qsort(NULL, 0, ...) 是
+     UB(UBSan 实证),空表的 qsort 无意义,统一加 count 守卫(与上方 item 表
+     的 `if (b->item_count)` 守卫同款) */
+  if (b->module_count) qsort(b->mods, (size_t)b->module_count, sizeof *b->mods, cmp_mod);
+  if (b->fn_count) qsort(b->fns, (size_t)b->fn_count, sizeof *b->fns, cmp_fn);
+  if (b->trigger_count) qsort(b->triggers, (size_t)b->trigger_count, sizeof *b->triggers, cmp_trig);
+  if (b->dep_count) qsort(b->deps, (size_t)b->dep_count, sizeof *b->deps, cmp_dep);
   if (check_dupes(b->fns, b->fn_count, errbuf, errlen)) return -1;
   for (u64 i = 1; i < b->module_count; i++)
     if (mm_id(&b->mods[i]) == mm_id(&b->mods[i - 1])) {

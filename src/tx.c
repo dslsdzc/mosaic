@@ -575,6 +575,18 @@ int mosaic_tx_rollback(mosaic_tx *tx, char *errbuf, size_t errlen) {
   struct gen_route *cur = gen_route_swap(&rt->routes, tx->old_routes);
   tx->old_routes = NULL;
   if (cur) { gen_route_free(cur); free(cur); }
+  /* M2 遗留修复(设计缺口):demote 后补丁模块的 mods 缓存条目仍在——物化补丁
+     函数时 mod_load 命中缓存即返回补丁 .so 的旧 abi,以 base 记录 code_off
+     执行补丁 .so 代码(实测本应 +2 却 +7)。与 commit 转持阶段对称:对补丁
+     每个模块 mods_invalidate(旧 .so 挂 mods_dead 链延迟释放),下次 mod_load
+     按 base 记录 so_path 重新 dlopen。时序:先 swap 回旧路由,再 invalidate,
+     再卸载补丁 pack。 */
+  {
+    u64 mc = hdr_module_count(tx->patch.map);
+    const mosaic_module_record *pmods =
+        (const mosaic_module_record *)(tx->patch.map + hdr_module_off(tx->patch.map));
+    for (u64 i = 0; i < mc; i++) mods_invalidate(rt, mm_id(&pmods[i]));
+  }
   /* 补丁 pack 从 rt->tx_packs 移除并 unmap(记录在磁盘仍在,重开可再 begin) */
   for (size_t i = 0; i < rt->n_tx_packs; i++) {
     if (rt->tx_packs[i].fd == tx->patch.fd) {

@@ -340,22 +340,30 @@ static void test_corrupt_item_table(void) {
     MT_CHECK(rt == NULL);
     if (rt) mosaic_runtime_close(rt);
   }
-  /* count 越界:count×IT_SIZE 超出映射(除法防回绕路径) */
+  /* count 越界:count×IT_SIZE 超出映射(除法防回绕路径)。
+     M2 遗留修复(盲区):先重建干净 pack(上面的 off 越界用例已把 item_off
+     写坏),再读 hdr_item_off 存变量、写回**原值**——旧代码此处写回的是
+     1<<40 而非原值,open 在 off 界即拒(itoff > map_len),count 越界(1<<20)
+     的除法路径从未被求值。 */
   {
+    MT_CHECK(build_pack_a() == 0);
     FILE *f = fopen(PA_PATH, "r+b");
     MT_CHECK(f != NULL);
     if (f) {
-      u8 v[8]; wr_le64(v, 1ull << 40);
+      u8 orig_off[8], v[8];
       MT_CHECK(fseek(f, HDR_ITEM_OFF, SEEK_SET) == 0);
-      MT_CHECK(fwrite(v, 1, 8, f) == 8);       /* 复原 off */
+      MT_CHECK(fread(orig_off, 1, 8, f) == 8);  /* 原 item_off 存入变量 */
       wr_le64(v, 1ull << 20);
       MT_CHECK(fseek(f, HDR_ITEM_COUNT, SEEK_SET) == 0);
       MT_CHECK(fwrite(v, 1, 8, f) == 8);
+      MT_CHECK(fseek(f, HDR_ITEM_OFF, SEEK_SET) == 0);
+      MT_CHECK(fwrite(orig_off, 1, 8, f) == 8); /* 复原 off(原值,off 界放行) */
       fclose(f);
     }
     mosaic_runtime *rt = mosaic_runtime_open(PA_PATH, err, sizeof err);
     MT_CHECK(rt == NULL);
     if (rt) mosaic_runtime_close(rt);
+    MT_CHECK(strstr(err, "bounds") != NULL);    /* count 除法路径命中 */
   }
 }
 
