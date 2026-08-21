@@ -21,11 +21,14 @@ static int validate_layout(mosaic_runtime *rt, char *errbuf, size_t errlen) {
   u64 soff = hdr_state_off(h), scap = hdr_state_cap(h), slen = hdr_state_len(h);
   u64 meoff = hdr_meta_off(h), melen = hdr_meta_len(h);
   u64 eoff = hdr_event_names_off(h), ec = hdr_event_count(h);
-  u64 ebytes = ec * MN_SIZE;
-  if (moff + mc * MM_SIZE > rt->map_len || foff + fc * FN_SIZE > rt->map_len ||
-      toff + tc * MT_SIZE > rt->map_len || doff + dc * MD_SIZE > rt->map_len ||
-      meoff + melen > rt->map_len || eoff + ebytes > rt->map_len ||
-      soff + scap > rt->map_len || slen > scap) {
+  /* 每表:偏移本身必须 ≤ map_len;count×size 用除法防 u64 回绕 */
+  if (moff > rt->map_len || mc > (rt->map_len - moff) / MM_SIZE ||
+      foff > rt->map_len || fc > (rt->map_len - foff) / FN_SIZE ||
+      toff > rt->map_len || tc > (rt->map_len - toff) / MT_SIZE ||
+      doff > rt->map_len || dc > (rt->map_len - doff) / MD_SIZE ||
+      meoff > rt->map_len || melen > rt->map_len - meoff ||
+      eoff > rt->map_len || ec > (rt->map_len - eoff) / MN_SIZE ||
+      soff > rt->map_len || scap > rt->map_len - soff || slen > scap) {
     set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "offset out of bounds");
     return -1;
   }
@@ -80,7 +83,9 @@ u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
   for (u32 i = 0; i < ec; i++) {
     const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + (u64)i * MN_SIZE);
     u32 o = mn_off(en), l = mn_len(en);
-    if (base + o + l + 1 <= rt->map_len && strcmp(name, (const char *)(rt->map + base + o)) == 0)
+    const char *p = (const char *)(rt->map + base + o);
+    /* strcmp 会越过 NUL 窗口读到 map 外;改 strncmp 限定窗口内比较,并确认窗口尾为 NUL */
+    if (base + o + l + 1 <= rt->map_len && strncmp(name, p, l) == 0 && p[l] == '\0')
       return i;
   }
   return MOSAIC_U32_NONE;

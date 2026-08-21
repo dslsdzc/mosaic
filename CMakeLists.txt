@@ -33,10 +33,3 @@ add_test(NAME test_builder COMMAND test_builder)
 add_executable(test_runtime tests/test_runtime.c)
 target_link_libraries(test_runtime mosaic_core)
 add_test(NAME test_runtime COMMAND test_runtime)
-
-# 后续任务启用(先在文件中注释掉,避免缺文件编译失败):
-# add_executable(test_runtime tests/test_runtime.c)   ... 见 Task 3-9
-# add_executable(test_mod MODULE tests/test_mod.c)    ... 见 Task 6
-# add_executable(test_badmod MODULE tests/test_badmod.c) ... 见 Task 6
-# add_executable(synth_mod MODULE bench/synth_abi.c)  ... 见 Task 10
-# add_executable(bench_runner bench/bench_runner.c bench/synth_universe.c) ... 见 Task 10

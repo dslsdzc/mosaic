@@ -71,10 +71,55 @@ static void test_open_bad_offset(void) {
   MT_CHECK(strstr(err, "bounds") != NULL);
 }
 
+static void test_open_bad_meta_offset(void) {
+  FILE *f = fopen("/tmp/mosaic_test_badmeta.pack", "wb");
+  u8 hdr[HDR_SIZE]; memset(hdr, 0, sizeof hdr);
+  wr_le32(hdr + HDR_MAGIC, MOSAIC_PACK_MAGIC);
+  wr_le32(hdr + HDR_VERSION, MOSAIC_PACK_VERSION);
+  hdr_set_meta_off(hdr, 1ull << 50);   /* 越界 */
+  hdr_set_meta_len(hdr, 100);
+  fwrite(hdr, 1, sizeof hdr, f);
+  fclose(f);
+  char err[256] = {0};
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_badmeta.pack", err, sizeof err);
+  MT_CHECK(rt == NULL);
+  MT_CHECK(strstr(err, "bounds") != NULL);
+}
+
+static void test_open_too_small(void) {
+  FILE *f = fopen("/tmp/mosaic_test_tiny.pack", "wb");
+  u8 buf[100]; memset(buf, 0x5A, sizeof buf);   /* 100B < HDR_SIZE 路径 */
+  fwrite(buf, 1, sizeof buf, f);
+  fclose(f);
+  char err[256] = {0};
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_tiny.pack", err, sizeof err);
+  MT_CHECK(rt == NULL);
+  MT_CHECK(strstr(err, "too small") != NULL);
+}
+
+static void test_open_count_overflow(void) {
+  FILE *f = fopen("/tmp/mosaic_test_wrap.pack", "wb");
+  u8 hdr[HDR_SIZE]; memset(hdr, 0, sizeof hdr);
+  wr_le32(hdr + HDR_MAGIC, MOSAIC_PACK_MAGIC);
+  wr_le32(hdr + HDR_VERSION, MOSAIC_PACK_VERSION);
+  /* moff=0:旧校验 moff + (1ull<<63)*64 回绕成 0+32 可绕过;除法校验必须拒绝 */
+  hdr_set_module_off(hdr, 0);
+  hdr_set_module_count(hdr, 1ull << 63);
+  fwrite(hdr, 1, sizeof hdr, f);
+  fclose(f);
+  char err[256] = {0};
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_wrap.pack", err, sizeof err);
+  MT_CHECK(rt == NULL);
+  MT_CHECK(strstr(err, "bounds") != NULL);
+}
+
 int main(void) {
   MT_RUN(test_open_good_pack);
   MT_RUN(test_open_bad_magic);
   MT_RUN(test_open_bad_version);
   MT_RUN(test_open_bad_offset);
+  MT_RUN(test_open_bad_meta_offset);
+  MT_RUN(test_open_too_small);
+  MT_RUN(test_open_count_overflow);
   return MT_RESULT() ? 0 : 1;
 }
