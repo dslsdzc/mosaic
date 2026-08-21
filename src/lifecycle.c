@@ -6,9 +6,95 @@
 #include <stdio.h>
 #include <unistd.h>   /* ftruncate(D-10-3:文件映射扩容先撑文件) */
 
+/* ---- mods 哈希(评审已知缺陷修复):单链表全链扫描 → 开放寻址哈希。
+   容量恒为 2 的幂,& (cap-1) 取模;0 = 空槽(module_id ≥ 1,哨兵安全)。 ---- */
+static struct mod_entry *mods_get(mosaic_runtime *rt, u64 module_id) {
+  struct mods_hash *h = &rt->mods;
+  if (!h->cap) return NULL;
+  u64 mask = h->cap - 1;
+  u64 i = module_id & mask;
+  for (u64 n = 0; n < h->cap; n++) {
+    u64 k = h->keys[i];
+    if (!k) return NULL;
+    if (k == module_id) return h->vals[i];
+    i = (i + 1) & mask;
+  }
+  return NULL;
+}
+
+static int mods_grow(mosaic_runtime *rt) {
+  struct mods_hash *h = &rt->mods;
+  u64 cap = h->cap ? h->cap * 2 : 16;
+  u64 *keys = calloc(cap, sizeof *keys);
+  struct mod_entry **vals = calloc(cap, sizeof *vals);
+  if (!keys || !vals) { free(keys); free(vals); rt->last_err = MOSAIC_ERR_NOMEM; return -1; }
+  for (u64 i = 0; i < h->cap; i++) {
+    u64 k = h->keys[i];
+    if (!k) continue;
+    u64 j = k & (cap - 1);
+    while (keys[j]) j = (j + 1) & (cap - 1);
+    keys[j] = k; vals[j] = h->vals[i];
+  }
+  free(h->keys); free(h->vals);
+  h->keys = keys; h->vals = vals; h->cap = cap;
+  return 0;
+}
+
+/* 负载 ≥70% 扩容 ×2;失败返回 -1 并设 NOMEM(调用方回滚 dlclose+free) */
+static int mods_put(mosaic_runtime *rt, struct mod_entry *m) {
+  struct mods_hash *h = &rt->mods;
+  if (h->len * 10 >= h->cap * 7) {
+    if (mods_grow(rt) != 0) return -1;
+  }
+  u64 mask = h->cap - 1;
+  u64 i = m->module_id & mask;
+  while (h->keys[i]) i = (i + 1) & mask;
+  h->keys[i] = m->module_id; h->vals[i] = m;
+  h->len++;
+  return 0;
+}
+
+/* 开放寻址删除后移判定(与 working_set.c ws_remove 同一几何,见该文件注释) */
+static int mods_in_fwd_interval(u64 ideal, u64 h, u64 j, u64 mask) {
+  if (h < j) return ideal > h && ideal <= j;
+  return ideal > h || ideal <= j;
+}
+
+/* 从哈希删除并把条目交给调用方(调用方负责 dlclose+free);未命中则 *out=NULL */
+static void mods_remove(mosaic_runtime *rt, u64 module_id, struct mod_entry **out) {
+  *out = NULL;
+  struct mods_hash *h = &rt->mods;
+  if (!h->cap) return;
+  u64 mask = h->cap - 1;
+  u64 i = module_id & mask;
+  u64 found = h->cap;   /* 记录命中槽,cap 表示未命中 */
+  for (u64 n = 0; n < h->cap; n++) {
+    if (h->keys[i] == module_id) { found = i; break; }
+    if (!h->keys[i]) break;
+    i = (i + 1) & mask;
+  }
+  if (found == h->cap) return;
+  *out = h->vals[found];
+  h->keys[found] = 0; h->vals[found] = NULL;
+  h->len--;
+  /* 开放寻址删除必须后移簇内后续条目,否则簇内靠后的键会因遇到空槽而不可达
+     (经典 bug,working_set.c ws_remove 同款处理) */
+  u64 j = (found + 1) & mask;
+  while (h->keys[j]) {
+    u64 ideal = h->keys[j] & mask;
+    if (!mods_in_fwd_interval(ideal, found, j, mask)) {
+      h->keys[found] = h->keys[j];
+      h->vals[found] = h->vals[j];
+      h->keys[j] = 0; h->vals[j] = NULL;
+      found = j;
+    }
+    j = (j + 1) & mask;
+  }
+}
+
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
-  for (struct mod_entry *m = rt->mods; m; m = m->next)
-    if (m->module_id == module_id) { m->refs++; return m->abi; }
+  struct mod_entry *m = mods_get(rt, module_id);
+  if (m) { m->refs++; return m->abi; }
   /* M1.5-A:find_module_ex 给出归属 pack,module_string_ex 直接读该 pack 的 meta
      (公开 module_string 的 uintptr_t 指针扫描是 implementation-defined,生命周期
      内部不依赖它) */
@@ -35,24 +121,20 @@ const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
      故移除该急切校验,越界一律由 materialize 的 co >= fn_count 惰性校验兜底
      (test_lifecycle test_tombstone_illegal_transitions code_off=5 仍被拒)。 */
   (void)rec;
-  struct mod_entry *m = calloc(1, sizeof *m);
+  m = calloc(1, sizeof *m);
   if (!m) { dlclose(so); rt->last_err = MOSAIC_ERR_NOMEM; return NULL; }
   m->module_id = module_id; m->so = so; m->abi = abi; m->refs = 1;
-  m->next = rt->mods; rt->mods = m;
+  if (mods_put(rt, m) != 0) { dlclose(so); free(m); return NULL; }   /* OOM 回滚 */
   return abi;
 }
 
 void mod_unload(mosaic_runtime *rt, u64 module_id) {
-  for (struct mod_entry **pp = &rt->mods; *pp; pp = &(*pp)->next) {
-    if ((*pp)->module_id == module_id) {
-      struct mod_entry *m = *pp;
-      if (m->refs > 1) { m->refs--; return; }
-      *pp = m->next;
-      dlclose(m->so);
-      free(m);
-      return;
-    }
-  }
+  struct mod_entry *m = mods_get(rt, module_id);
+  if (!m) return;
+  if (m->refs > 1) { m->refs--; return; }
+  mods_remove(rt, module_id, &m);
+  dlclose(m->so);
+  free(m);
 }
 
 /* 状态 blob 布局:[4B reserved][(u32 len, bytes) 条目...]。

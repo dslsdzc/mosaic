@@ -157,7 +157,13 @@ mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t 
 
 void mosaic_runtime_close(mosaic_runtime *rt) {
   if (!rt) return;
-  for (struct mod_entry *m = rt->mods; m; ) { struct mod_entry *nx = m->next; if (m->so) dlclose(m->so); free(m); m = nx; }
+  if (rt->mods.cap) {
+    for (u64 i = 0; i < rt->mods.cap; i++) {
+      struct mod_entry *m = rt->mods.vals[i];
+      if (m) { if (m->so) dlclose(m->so); free(m); }
+    }
+    free(rt->mods.keys); free(rt->mods.vals);
+  }
   for (struct slab *s = rt->slabs; s; ) { struct slab *nx = s->next; free(s->start); free(s); s = nx; }
   free(rt->ws.keys); free(rt->ws.vals);
   for (size_t i = 0; i < rt->n_packs; i++) {

@@ -17,7 +17,16 @@ struct mod_entry {
   void *so;
   const mosaic_module_abi *abi;
   u32 refs;
-  struct mod_entry *next;
+};
+
+/* 已 dlopen 模块的开放寻址哈希(线性探测):mod_load/mod_unload 由单链表全链
+   扫描 O(n) 降为 O(1)(评审已知缺陷:mods 链表,全量物化 O(n_mods²),1e6
+   函数实测 1109.7s)。与 ws_hash 同款:0 = 空槽(module_id ≥ 1,哨兵安全),
+   容量恒为 2 的幂,& (cap-1) 取模,负载 70% 时扩容 ×2 重散列。 */
+struct mods_hash {
+  u64 cap, len;
+  u64 *keys;               /* 0 = 空槽 */
+  struct mod_entry **vals;
 };
 
 struct ws_hash {
@@ -49,7 +58,7 @@ struct pack_view {
 struct mosaic_runtime {
   struct pack_view *packs;
   size_t n_packs;
-  struct mod_entry *mods;  /* 已 dlopen 的模块 */
+  struct mods_hash mods;   /* 已 dlopen 的模块(开放寻址哈希) */
   struct ws_hash ws;
   struct mosaic_fn_obj *ws_head, *ws_tail;
   struct slab *slabs;
