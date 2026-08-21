@@ -79,6 +79,9 @@ mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_pack
   rt->packs = packs;
   rt->n_packs = n_packs;
   rt->last_err = MOSAIC_OK;
+  /* I-1:calloc 清零使未处理条目的 fd == 0,失败清理循环会误 close(0)(关掉
+     stdin)。打开循环前把所有条目预置为无效 fd。 */
+  for (size_t i = 0; i < n_packs; i++) rt->packs[i].fd = -1;
   for (size_t i = 0; i < n_packs; i++) {
     /* 修正 D-10-3(逐 pack):state_blob_append 需要 ftruncate 扩容文件再 mremap
        (否则写入越过文件末页 → SIGBUS);先试 O_RDWR,只读 pack 回退 O_RDONLY
@@ -113,8 +116,11 @@ mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_pack
   /* 排序(按 min),rt->packs 顺序即范围表顺序 */
   qsort(packs, n_packs, sizeof *packs, cmp_pack_view);
   /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后相邻两两检查即可;
-     空范围 (1,0) 的 max < min,天然不命中重叠条件 */
+     M-1:空范围 (1,0) 的 max < min,直接跳过——它与含 module_id=0 的 pack
+     相邻时(min=0)双向条件会误报重叠 */
   for (size_t i = 1; i < n_packs; i++) {
+    if (packs[i - 1].max_mod < packs[i - 1].min_mod) continue;   /* 空范围 */
+    if (packs[i].max_mod < packs[i].min_mod) continue;           /* 空范围 */
     if (packs[i - 1].min_mod <= packs[i].max_mod && packs[i].min_mod <= packs[i - 1].max_mod) {
       if (errbuf && errlen) snprintf(errbuf, errlen, "overlapping pack module ranges");
       goto fail;

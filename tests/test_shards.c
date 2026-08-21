@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 
 static const char *SO_PATH;
@@ -259,6 +260,21 @@ static void test_reject_event_mismatch(void) {
   MT_CHECK(strstr(err, "event table mismatch") != NULL);
 }
 
+/* I-1 回归:[有效, 不存在, 有效] 三路径。修复前 calloc 清零使第 3 个未处理
+   条目 fd == 0,失败清理循环 close(0) 直接关掉 stdin;修复后必须先预置
+   全部条目 fd = -1 才打开。断言:open_many 返回 NULL,且返回后 stdin 仍开着。 */
+static void test_open_many_fail_keeps_stdin(void) {
+  char err[256];
+  MT_CHECK(build_p0() == 0);
+  const char *paths[3] = { P0_PATH, "/tmp/mosaic_shard_missing.pack", P0_PATH };
+  MT_CHECK(fcntl(0, F_GETFD) >= 0);   /* 前置:stdin 开着 */
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths, 3, err, sizeof err);
+  MT_CHECK(rt == NULL);
+  if (rt) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(strstr(err, "open /tmp/mosaic_shard_missing.pack failed") != NULL);
+  MT_CHECK(fcntl(0, F_GETFD) >= 0);   /* I-1:stdin 未被清理循环关闭 */
+}
+
 static void test_no_packs_and_single(void) {
   char err[256];
   MT_CHECK(mosaic_runtime_open_many(NULL, 0, err, sizeof err) == NULL);
@@ -283,5 +299,6 @@ int main(int argc, char **argv) {
   MT_RUN(test_reject_overlapping_ranges);
   MT_RUN(test_reject_event_mismatch);
   MT_RUN(test_no_packs_and_single);
+  MT_RUN(test_open_many_fail_keeps_stdin);
   return MT_RESULT() ? 0 : 1;
 }
