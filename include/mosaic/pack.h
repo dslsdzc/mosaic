@@ -141,4 +141,19 @@ typedef struct { u8 bytes[MN_SIZE]; } mosaic_event_name;
 static inline u32 mn_off(const mosaic_event_name *n) { return rd_le32(n->bytes + MN_OFF_OFF); }
 static inline u32 mn_len(const mosaic_event_name *n) { return rd_le32(n->bytes + MN_OFF_LEN); }
 static inline void mn_set(mosaic_event_name *n, u32 off, u32 len) { wr_le32(n->bytes + MN_OFF_OFF, off); wr_le32(n->bytes + MN_OFF_LEN, len); }
+
+/* ---- Pack builder ---- */
+typedef struct mosaic_pack_builder mosaic_pack_builder;
+
+mosaic_pack_builder *mosaic_pack_builder_create(const char *path, u64 module_count, u64 fn_count,
+                                                u64 trigger_count, u64 dep_count, u32 event_count);
+void mosaic_pack_builder_add_event(mosaic_pack_builder *b, const char *name);
+void mosaic_pack_builder_add_module(mosaic_pack_builder *b, u64 module_id, u32 version,
+                                    const char *name, const char *so_path);
+void mosaic_pack_builder_add_fn(mosaic_pack_builder *b, u64 module_id, u64 local_id, u32 code_off,
+                                u32 state_size, u32 generation, u32 cost_hint, u16 flags_extra);
+void mosaic_pack_builder_add_trigger(mosaic_pack_builder *b, u32 event_id, u64 fn_id);
+void mosaic_pack_builder_add_dep(mosaic_pack_builder *b, u64 owner_id, u64 dep_id);
+int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen);
+void mosaic_pack_builder_free(mosaic_pack_builder *b);
 #endif

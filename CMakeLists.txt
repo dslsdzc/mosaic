@@ -8,6 +8,7 @@ endif()
 
 add_library(mosaic_core STATIC
   src/pack_reader.c
+  src/pack_builder.c
   src/index.c
   src/working_set.c
   src/lifecycle.c
@@ -23,6 +24,10 @@ enable_testing()
 add_executable(test_pack tests/test_pack.c)
 target_link_libraries(test_pack mosaic_core)
 add_test(NAME test_pack COMMAND test_pack)
+
+add_executable(test_builder tests/test_builder.c)
+target_link_libraries(test_builder mosaic_core)
+add_test(NAME test_builder COMMAND test_builder)
 
 # 后续任务启用(先在文件中注释掉,避免缺文件编译失败):
 # add_executable(test_runtime tests/test_runtime.c)   ... 见 Task 3-9
