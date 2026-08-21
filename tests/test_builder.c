@@ -169,8 +169,18 @@ static void test_trigger_unknown_event_rejected(void) {
 
 static void test_too_many_events_rejected(void) {
   char err[256];
-  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_ev65.pack", 1, 0, 0, 0, 65);
+  /* M3-1:上限 64→4096,测试构造 MOSAIC_MAX_EVENTS+1 个事件(名字 "e%04u"
+     唯一,4097 次 add_event + 排序在构建期 ~ms 级);"too many events" 断言
+     不变——错误文案随宏自动带上新上限 */
+  const u32 n = MOSAIC_MAX_EVENTS + 1;
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_evmax.pack", 1, 0, 0, 0, n);
+  if (!b) { MT_CHECK(0); return; }
   mosaic_pack_builder_add_module(b, 10, 1, "a", "/tmp/a.so");
+  char name[16];
+  for (u32 i = 0; i < n; i++) {
+    snprintf(name, sizeof name, "e%04u", i);
+    mosaic_pack_builder_add_event(b, name);
+  }
   MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) != 0);
   MT_CHECK(strstr(err, "too many events") != NULL);
   mosaic_pack_builder_free(b);

@@ -23,6 +23,7 @@ add_library(mosaic_core STATIC
   src/genroute.c
   src/tx.c
   src/sched.c
+  src/events.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # M2-3:sched.c 仅 libc + pthread(静态库的 PRIVATE 链接依赖会传导到最终链接行)
@@ -133,3 +134,9 @@ add_test(NAME test_sched COMMAND test_sched $<TARGET_FILE:test_mod>)
 add_executable(test_descriptor tests/test_descriptor.c)
 target_link_libraries(test_descriptor mosaic_core)
 add_test(NAME test_descriptor COMMAND test_descriptor)
+
+# M3-1:事件类型 API v1(目录 200+ 事件 + 载荷签名 + 频率档);大事件集 pack
+# 集成用例(300 事件构建→查找→派发执行订阅者)需要 test_mod.so fixture
+add_executable(test_events tests/test_events.c)
+target_link_libraries(test_events mosaic_core)
+add_test(NAME test_events COMMAND test_events $<TARGET_FILE:test_mod>)

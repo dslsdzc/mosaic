@@ -244,11 +244,23 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
     return -1;
   }
 
-  /* ---- 事件名排序:按名升序(长度感知比较;≤64 个,插入排序足够)。
-     事件 id = 排序后位置;reg_to_sorted[注册id] = 排序后位置,供触发器重映射。
-     comp 伴随数组随 event_names 移动,记录各位置条目的注册 id。 ---- */
-  u32 reg_to_sorted[MOSAIC_MAX_EVENTS];
-  u32 comp[MOSAIC_MAX_EVENTS];
+  /* ---- 事件名排序:按名升序(长度感知比较;≤4096 个,插入排序 O(n²)≈16M
+     次比较,构建期 ~100ms 级可接受)。事件 id = 排序后位置;
+     reg_to_sorted[注册id] = 排序后位置,供触发器重映射。
+     comp 伴随数组随 event_names 移动,记录各位置条目的注册 id。
+     M3-1:上限 64→4096 后两个 u32 辅助数组 4096×4×2 = 32KB,栈放不下 →
+     改堆分配(event_count 为 0 时跳过,避免 calloc(0) 的 NULL/歧义)。 ---- */
+  u32 *reg_to_sorted = NULL, *comp = NULL;
+  if (b->event_count) {
+    reg_to_sorted = calloc(b->event_count, sizeof *reg_to_sorted);
+    comp = calloc(b->event_count, sizeof *comp);
+    if (!reg_to_sorted || !comp) {
+      free(reg_to_sorted);
+      free(comp);
+      builder_err(errbuf, errlen, "oom");
+      return -1;
+    }
+  }
   for (u32 i = 0; i < b->event_count; i++) { reg_to_sorted[i] = i; comp[i] = i; }
   for (u32 i = 1; i < b->event_count; i++) {
     mosaic_event_name cur = b->event_names[i];
@@ -268,6 +280,8 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
   for (u32 i = 1; i < b->event_count; i++)
     if (ev_cmp(b, &b->event_names[i - 1], &b->event_names[i]) == 0) {
       builder_err(errbuf, errlen, "duplicate event name");
+      free(reg_to_sorted);
+      free(comp);
       return -1;
     }
   /* 触发器重映射:注册顺序 id → 排序后 id(引用不存在的注册 id 一并拒绝) */
@@ -275,10 +289,14 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
     u32 old = mt_event_id(&b->triggers[k]);
     if (old >= b->event_count) {
       builder_err(errbuf, errlen, "trigger references unknown event");
+      free(reg_to_sorted);
+      free(comp);
       return -1;
     }
     mt_set_event(&b->triggers[k], reg_to_sorted[old]);
   }
+  free(reg_to_sorted);
+  free(comp);
 
   /* M2-4(v3):item 表按 (category, name) 排序;排序后相邻重名(同分类同名字)
      拒绝——二分查找要求分类内名字唯一 */

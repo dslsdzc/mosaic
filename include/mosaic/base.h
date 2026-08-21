@@ -29,5 +29,8 @@ enum {
   MOSAIC_ERR_IO = 7,
 };
 #define MOSAIC_U32_NONE 0xFFFFFFFFu
-#define MOSAIC_MAX_EVENTS 64   /* 事件名上限(名称表 + 触发表引用) */
+#define MOSAIC_MAX_EVENTS 4096 /* 事件名上限(名称表 + 触发表引用):事件类型 API
+                                  生态规模——真实生态 Bukkit/Paper ~250 事件、
+                                  NeoForge 数百到上千;名称表二分查找 O(log n),
+                                  上限放宽无性能影响 */
 #endif
