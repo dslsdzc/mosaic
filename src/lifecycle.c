@@ -92,19 +92,57 @@ static void mods_compact(mosaic_runtime *rt) {
   h->len = alive;
 }
 
-void flush_pending_dlclose(mosaic_runtime *rt) {
+/* M2-2b 修复(I-1):commit 转持后,补丁模块的 mods 缓存条目必须失效——
+   mod_load 按 module_id 命中缓存即返回旧 abi,补丁 so_path 指向新 .so 时
+   物化仍执行旧 .so 代码(实测 12 而非 17)。开放寻址哈希没有逐条删除路径
+   (删除后移复杂、可能创建探测空洞),采用重建式:标记槽位后 mods_compact
+   (commit 罕见,O(n) 可接受)。条目处置——统一挂 rt->mods_dead 链延迟释放:
+   refs==0(纯缓存/pending)→ 立即置 pending,flush 收尾;refs>0(旧 .so 仍
+   有活对象,其代码可能正在栈上)→ 由 mod_unload 递减,归零置 pending,
+   flush_pending_dlclose 收尾 dlclose。与延迟 dlclose 同一纪律:commit 若从
+   模块代码内发起(重入),立即 dlclose 会使返回地址悬垂 → 返回即崩。 */
+void mods_invalidate(mosaic_runtime *rt, u64 module_id) {
   struct mods_hash *h = &rt->mods;
   if (!h->cap) return;
-  for (u64 i = 0; i < h->cap; i++) {
-    struct mod_entry *m = h->vals[i];
-    if (!m) continue;
+  struct mod_entry *m = mods_get(rt, module_id);
+  if (!m) return;   /* 该模块从未加载(无缓存)→ no-op */
+  u64 mask = h->cap - 1, i = module_id & mask;
+  for (u64 n = 0; n < h->cap; n++) {
+    if (h->keys[i] == module_id) { h->keys[i] = 0; h->vals[i] = NULL; break; }
+    i = (i + 1) & mask;
+  }
+  mods_compact(rt);   /* 重建式删除(开放寻址无逐条删除);OOM 保留旧表(空洞仍可用) */
+  if (m->refs == 0) m->pending = 1;   /* 无活对象:等下一个安全点 flush */
+  m->next = rt->mods_dead;
+  rt->mods_dead = m;
+}
+
+void flush_pending_dlclose(mosaic_runtime *rt) {
+  struct mods_hash *h = &rt->mods;
+  if (h->cap) {
+    for (u64 i = 0; i < h->cap; i++) {
+      struct mod_entry *m = h->vals[i];
+      if (!m) continue;
+      if (m->pending) {
+        if (m->so) dlclose(m->so);
+        free(m);
+        h->keys[i] = 0; h->vals[i] = NULL;
+      }
+    }
+    mods_compact(rt);
+  }
+  /* M2-2b 修复(I-1):mods_dead 链(commit 失效条目)同样在安全点收尾 */
+  struct mod_entry **pp = &rt->mods_dead;
+  while (*pp) {
+    struct mod_entry *m = *pp;
     if (m->pending) {
       if (m->so) dlclose(m->so);
       free(m);
-      h->keys[i] = 0; h->vals[i] = NULL;
+      *pp = m->next;
+    } else {
+      pp = &m->next;
     }
   }
-  mods_compact(rt);
 }
 
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
@@ -151,12 +189,23 @@ const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
 
 void mod_unload(mosaic_runtime *rt, u64 module_id) {
   struct mod_entry *m = mods_get(rt, module_id);
-  if (!m) return;
-  if (m->refs > 1) { m->refs--; return; }
-  /* refs 归零 → pending = 1,不 dlclose(可能正被自身代码执行中);.so 保持
-     加载,由下一个安全点(dispatch/evict 末尾)flush_pending_dlclose 卸载 */
-  m->refs = 0;
-  m->pending = 1;
+  if (m) {
+    if (m->refs > 1) { m->refs--; return; }
+    /* refs 归零 → pending = 1,不 dlclose(可能正被自身代码执行中);.so 保持
+       加载,由下一个安全点(dispatch/evict 末尾)flush_pending_dlclose 卸载 */
+    m->refs = 0;
+    m->pending = 1;
+    return;
+  }
+  /* M2-2b 修复(I-1):条目已被 commit 失效(不在哈希,挂 mods_dead 链)——仍
+     需递减 refs,归零置 pending 由 flush 收尾(否则旧 .so 永不卸载,泄漏) */
+  for (struct mod_entry *d = rt->mods_dead; d; d = d->next) {
+    if (d->module_id == module_id) {
+      if (d->refs > 1) d->refs--;
+      else { d->refs = 0; d->pending = 1; }
+      return;
+    }
+  }
 }
 
 /* 状态 blob 布局:[4B reserved][(u32 len, bytes) 条目...]。

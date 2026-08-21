@@ -20,6 +20,10 @@ struct mod_entry {
   u8 pending;   /* 缺陷 2:refs 归零 → 待 flush 安全点 dlclose(自墓碑正在执行的
                    .so 不得立即卸载,否则返回地址悬垂 → 返回即崩);flush 前
                    .so 保持加载,mod_load 命中 pending 条目直接复活(不重新 dlopen) */
+  struct mod_entry *next;   /* M2-2b 修复(I-1):失效条目链——commit 使 mods
+                               条目失效时,refs>0 的旧 .so 不能立即 dlclose,
+                               从哈希摘除后挂 rt->mods_dead,refs 由 mod_unload
+                               递减、归零置 pending,flush_pending_dlclose 收尾 */
 };
 
 /* 已 dlopen 模块的开放寻址哈希(线性探测):mod_load/mod_unload 由单链表全链
@@ -77,6 +81,8 @@ struct mosaic_runtime {
   struct pack_view *packs;
   size_t n_packs;
   struct mods_hash mods;   /* 已 dlopen 的模块(开放寻址哈希) */
+  struct mod_entry *mods_dead;   /* M2-2b 修复(I-1):commit 失效的旧 .so 条目链
+                                    (refs>0 不能立即 dlclose,延迟释放) */
   u32 dispatch_depth;      /* 嵌套派发深度:flush_pending_dlclose 只在最外层
                               派发末尾执行(此时栈上无任何模块代码帧,dlclose
                               才安全);内层派发末尾只减深度不 flush */
@@ -149,9 +155,15 @@ const char *module_string_ex(const mosaic_runtime *rt, size_t pack, const mosaic
    实现(M2-2b commit 写补丁 pack blob 用,补丁未转持前不在 rt->tx_packs) */
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id);
 void mod_unload(mosaic_runtime *rt, u64 module_id);
+/* M2-2b 修复(I-1):commit 转持后调用——补丁模块的 mods 缓存条目失效(旧 .so
+   + 旧 abi),下次 mod_load 重新 dlopen 补丁 so_path。哈希无逐条删除,重建式
+   (标记槽位 + mods_compact,commit 罕见,O(n) 可接受)。refs>0 的旧 .so 挂
+   mods_dead 链延迟释放(与延迟 dlclose 同一纪律)。 */
+void mods_invalidate(mosaic_runtime *rt, u64 module_id);
 int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 len, u32 *out_off);
 int state_blob_append_pack(mosaic_runtime *rt, struct pack_view *pv, const void *bytes, u32 len, u32 *out_off);
-/* 延迟 dlclose(缺陷 2):dlclose + free 所有 pending 条目并重建哈希表。
-   只在安全点调用(dispatch/evict 末尾、close 前)——此时栈上无模块代码帧。 */
+/* 延迟 dlclose(缺陷 2):dlclose + free 所有 pending 条目并重建哈希表(含
+   mods_dead 链上的失效条目)。只在安全点调用(dispatch/evict 末尾、close
+   前)——此时栈上无模块代码帧。 */
 void flush_pending_dlclose(mosaic_runtime *rt);
 #endif

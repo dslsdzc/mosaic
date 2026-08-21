@@ -387,7 +387,14 @@ fail:
 
 /* 状态迁移:每个 REQUIRES_STATE 的补丁函数——
    - v1 state:ws_find 命中 → 活对象 state(对象还活着,直接读);未命中 →
-     base 记录 mf_state_off → base blob。
+     **活跃记录** mf_state_off → 其归属 pack 的 blob。
+   - M2-2b 修复(C-1):死路径曾用 find_function_ex(base 记录 → base blob)。
+     已 patch 过的函数在第二次 commit 时,活跃状态在**上一补丁 blob**(其
+     mf_state_off 由上次墓碑写在活跃记录上),base blob 只是历史快照(实测
+     gen1→commit#1(3→30)→执行 32→墓碑→commit#2 物化 = 30,应为 320)。
+     与物化恢复同一来源:find_function_active(路由命中 → 补丁记录,pack 编
+     码经 pack_view 解析到 tx_packs;未命中 → base 记录),blob 从活跃记录
+     所在 pack 读取。
    - v1 state 不存在(从未执行)→ v2 初始 = 零填充(记录 state_off 保持 0,
      与首次物化一致),不调用 transform。
    - 有变换(reserved != 0):transform(v1_state, v2_state, size),size = v2
@@ -414,8 +421,10 @@ static int tx_migrate_state(mosaic_tx *tx, char *errbuf, size_t errlen) {
       v1sz = live->state_size;
       have_v1 = 1;
     } else {
+      /* C-1:活跃代解析(与物化恢复同一来源)——第二次 commit 时活跃状态在
+         上一补丁 blob,find_function_ex 只看到 base 历史快照 */
       size_t bp = 0;
-      const mosaic_function_record *brec = find_function_ex(rt, fn_id, &bp);
+      const mosaic_function_record *brec = find_function_active(rt, fn_id, &bp);
       u32 soff = brec ? mf_state_off(brec) : 0;
       if (soff) {
         struct pack_view *bpv = pack_view(rt, bp);
@@ -542,6 +551,15 @@ int mosaic_tx_commit(mosaic_tx *tx, char *errbuf, size_t errlen) {
   rt->tx_packs = nt;
   rt->tx_packs[rt->n_tx_packs++] = tx->patch;
   tx->transferred = 1;
+  /* M2-2b 修复(I-1):补丁每个模块的 mods 缓存条目失效——补丁 so_path 可能
+     指向新 .so,缓存命中即返回旧 abi,物化会执行旧 .so 代码(实测 12 而非
+     17)。失效后下次 mod_load 重新 dlopen 补丁 so_path → 新 .so 生效。 */
+  {
+    u64 mc = hdr_module_count(tx->patch.map);
+    const mosaic_module_record *pmods =
+        (const mosaic_module_record *)(tx->patch.map + hdr_module_off(tx->patch.map));
+    for (u64 i = 0; i < mc; i++) mods_invalidate(rt, mm_id(&pmods[i]));
+  }
   tx->committed = 1;
   tx_release_probes(tx);   /* 探测 .so 使命完成(物化走 mod_load 重新 dlopen) */
   return 0;

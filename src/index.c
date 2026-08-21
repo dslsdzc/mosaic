@@ -94,18 +94,22 @@ const mosaic_function_record *find_function_active(mosaic_runtime *rt, u64 fn_id
 
 /* 活跃模块记录:已 commit 补丁优先(so_path/version 等以补丁为准——模块记录
    v2 的 so_path 可能与 base 不同,mod_load 必须用补丁的),未命中回落基础。
-   out_pack 编码同 find_function_active。 */
+   out_pack 编码同 find_function_active。
+   M2-2b 修复(I-2):**反向扫描**——tx_packs 顺序 = commit 顺序(旧→新),顺序
+   扫描会返回最早的补丁记录:多补丁下模块被 patch1/patch2 先后更新时,gen3
+   的物化会拿到 patch1 的 so_path(旧 .so)。最新补丁优先:从最新到最旧扫描,
+   返回第一个匹配(模块版本/so_path 以最新补丁为准)。 */
 const mosaic_module_record *find_module_active(mosaic_runtime *rt, u64 module_id, size_t *out_pack) {
   if (!rt) return NULL;
-  for (size_t i = 0; i < rt->n_tx_packs; i++) {
-    const u8 *map = rt->tx_packs[i].map;
+  for (size_t i = rt->n_tx_packs; i > 0; i--) {
+    const u8 *map = rt->tx_packs[i - 1].map;
     u64 n = hdr_module_count(map);
     const mosaic_module_record *mods = (const mosaic_module_record *)(map + hdr_module_off(map));
     u64 lo = 0, hi = n;
     while (lo < hi) {
       u64 mid = lo + (hi - lo) / 2;
       u64 id = mm_id(&mods[mid]);
-      if (id == module_id) { if (out_pack) *out_pack = rt->n_packs + i; return &mods[mid]; }
+      if (id == module_id) { if (out_pack) *out_pack = rt->n_packs + i - 1; return &mods[mid]; }
       if (id < module_id) lo = mid + 1; else hi = mid;
     }
   }

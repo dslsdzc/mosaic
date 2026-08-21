@@ -5,7 +5,11 @@
 #define MOSAIC_MODULE_ABI_VERSION 2
 
 typedef void (*mosaic_code_fn)(void *state, u32 event_id, const void *event);
-/* v2:状态迁移钩子——commit 阶段把 v1 代 state 原地转换为 v2 代(size 字节)。
+/* v2:状态迁移钩子——commit 阶段把 v1 代 state 转换为 v2 代。
+   size 契约:runtime 传 **v2 目标 size**(v2 记录 state_size_hint,0 → 模块
+   state_size),v1 侧大小由 **v1 记录 state_size_hint** 决定(runtime 不传);
+   transform 实现须自行按 v1 记录 state_size_hint 处理 v1 侧读取,不得按
+   size 读 v1 缓冲(混合版本下 v1 blob 可能比 v2 目标短)。
    索引按函数记录的 reserved 字段(transform_index+1)引用,见 pack.h FN_OFF_RSVD。 */
 typedef void (*mosaic_state_transform)(const void *v1_state, void *v2_state, u32 size);
 

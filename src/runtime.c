@@ -166,6 +166,13 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
     }
     free(rt->mods.keys); free(rt->mods.vals);
   }
+  /* M2-2b 修复(I-1):commit 失效条目链(旧 .so 延迟释放),close 一并收尾 */
+  for (struct mod_entry *m = rt->mods_dead; m; ) {
+    struct mod_entry *nx = m->next;
+    if (m->so) dlclose(m->so);
+    free(m);
+    m = nx;
+  }
   for (struct slab *s = rt->slabs; s; ) { struct slab *nx = s->next; free(s->start); free(s); s = nx; }
   free(rt->ws.keys); free(rt->ws.vals);
   /* M2-2a:generation 路由表(NULL = 无更新);gen_route_free 释放内部数组,

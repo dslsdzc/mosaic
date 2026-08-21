@@ -26,7 +26,9 @@
 #include <string.h>
 #include <stdlib.h>
 
-static const char *SO_PATH;
+static const char *SO_PATH;    /* test_mod(+2 / transform ×10) */
+static const char *V2_PATH;    /* test_mod_v2(+7 / transform ×10) */
+static const char *V3_PATH;    /* test_mod_v3(+13 / transform ×10) */
 #define BASE_PATH "/tmp/mosaic_tx_base.pack"
 #define PATCH_OK_PATH "/tmp/mosaic_tx_patch_ok.pack"
 #define PATCH_NOMOD_PATH "/tmp/mosaic_tx_patch_nomod.pack"
@@ -37,6 +39,12 @@ static const char *SO_PATH;
 #define PATCH_VER_PATH "/tmp/mosaic_tx_patch_ver.pack"
 #define PATCH_BADSO_PATH "/tmp/mosaic_tx_patch_badso.pack"
 #define PATCH_CO_PATH "/tmp/mosaic_tx_patch_co.pack"
+/* M2-2b 修复回归(C-1/I-1/I-2)专用补丁 pack */
+#define PATCH_MC1_PATH "/tmp/mosaic_tx_patch_mc1.pack"   /* 二次 commit 迁移:gen2,so=test_mod */
+#define PATCH_MC2_PATH "/tmp/mosaic_tx_patch_mc2.pack"   /* 二次 commit 迁移:gen3,so=test_mod */
+#define PATCH_INV_PATH "/tmp/mosaic_tx_patch_inv.pack"   /* mods 缓存失效:so=test_mod_v2 */
+#define PATCH_LS1_PATH "/tmp/mosaic_tx_patch_ls1.pack"   /* 最新补丁优先:patch1 so=test_mod_v2 */
+#define PATCH_LS2_PATH "/tmp/mosaic_tx_patch_ls2.pack"   /* 最新补丁优先:patch2 so=test_mod_v3 */
 
 #define A_ID (10ull << 32)
 #define B_ID ((10ull << 32) | 1)
@@ -109,6 +117,23 @@ static int build_patch_badso(void) {   /* 补丁模块 so 不存在:ABI 探测�
 }
 static int build_patch_co(void) {      /* code_off 9 ≥ abi->fn_count(5) */
   return build_patch_ex(PATCH_CO_PATH, 10, 2, SO_PATH, 0, 9, 2, 0, "player_join", "block_break");
+}
+/* ---- M2-2b 修复回归:补丁 pack 构建(事件表与 base 一致、模块同 id 10、
+     version/generation 递增、so_path 参数化,复用 build_patch_ex) ---- */
+static int build_patch_mc1(void) {     /* 二次 commit 迁移 patch1:gen2,so=test_mod,transform ×10 */
+  return build_patch_ex(PATCH_MC1_PATH, 10, 2, SO_PATH, 0, 4, 2, 1, "player_join", "block_break");
+}
+static int build_patch_mc2(void) {     /* 二次 commit 迁移 patch2:gen3,so=test_mod,transform ×10 */
+  return build_patch_ex(PATCH_MC2_PATH, 10, 3, SO_PATH, 0, 4, 3, 1, "player_join", "block_break");
+}
+static int build_patch_inv(void) {     /* mods 缓存失效:so=test_mod_v2(+7),gen2,transform ×10 */
+  return build_patch_ex(PATCH_INV_PATH, 10, 2, V2_PATH, 0, 4, 2, 1, "player_join", "block_break");
+}
+static int build_patch_ls1(void) {     /* 最新补丁优先 patch1:so=test_mod_v2,gen2 */
+  return build_patch_ex(PATCH_LS1_PATH, 10, 2, V2_PATH, 0, 4, 2, 1, "player_join", "block_break");
+}
+static int build_patch_ls2(void) {     /* 最新补丁优先 patch2:so=test_mod_v3,gen3 */
+  return build_patch_ex(PATCH_LS2_PATH, 10, 3, V3_PATH, 0, 4, 3, 1, "player_join", "block_break");
 }
 
 static void check_begin_fail(const char *path, const char *expect) {
@@ -365,14 +390,172 @@ static void test_commit_then_immediate_demote(void) {
   mosaic_runtime_close(rt);
 }
 
+/* ---- 6. C-1 回归:二次 commit 的状态迁移源(死路径)= 活跃记录。
+     修复前:commit#2 的迁移读 base blob(3)→ 物化 = 30;修复后:读活跃
+     记录(patch1 blob 32)→ ×10 = 320。 ---- */
+static void test_tx_multi_commit_migration(void) {
+  char err[256];
+  MT_CHECK(build_base() == 0);
+  MT_CHECK(build_patch_mc1() == 0);
+  MT_CHECK(build_patch_mc2() == 0);
+  mosaic_runtime *rt = mosaic_runtime_open(BASE_PATH, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  /* v1:物化 A ×3 → 3,墓碑(状态 3 进 base blob) */
+  mosaic_fn_obj *f = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(f != NULL);
+  if (!f) { mosaic_runtime_close(rt); return; }
+  for (int i = 0; i < 3; i++) mosaic_fn_execute(f, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)f->state, 3);
+  MT_CHECK(mosaic_fn_tombstone(rt, f) == 0);
+  /* commit#1(gen2,transform ×10):死路径读 base blob 3 → 30 */
+  mosaic_tx *tx1 = mosaic_tx_begin(rt, PATCH_MC1_PATH, err, sizeof err);
+  MT_CHECK(tx1 != NULL);
+  if (!tx1) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx1, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx1, err, sizeof err) == 0);
+  mosaic_fn_obj *a1 = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a1 != NULL);
+  if (!a1) { mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a1->state, 30);
+  mosaic_fn_execute(a1, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a1->state, 32);
+  MT_CHECK(mosaic_fn_tombstone(rt, a1) == 0);   /* 活跃状态 32 → patch1 blob */
+  /* commit#2(gen3):迁移必须从**活跃记录**(patch1 blob 32)迁移 → 320;
+     修复前 find_function_ex 读 base blob 3 → 30 */
+  mosaic_tx *tx2 = mosaic_tx_begin(rt, PATCH_MC2_PATH, err, sizeof err);
+  MT_CHECK(tx2 != NULL);
+  if (!tx2) { mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx2, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx2, err, sizeof err) == 0);
+  mosaic_fn_obj *a2 = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a2 != NULL);
+  if (!a2) { mosaic_tx_free(tx2); mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a2->state, 320);
+  mosaic_fn_execute(a2, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a2->state, 322);
+  MT_CHECK(mosaic_fn_tombstone(rt, a2) == 0);
+  /* 逆序 rollback(LIFO 纪律:先 tx2 后 tx1) */
+  MT_CHECK(mosaic_tx_rollback(tx2, err, sizeof err) == 0);
+  mosaic_tx_free(tx2);
+  MT_CHECK(mosaic_tx_rollback(tx1, err, sizeof err) == 0);
+  mosaic_tx_free(tx1);
+  mosaic_runtime_close(rt);
+}
+
+/* ---- 7. I-1 回归:commit 使补丁模块的 mods 缓存失效。
+     修复前:commit 后物化命中 mods 缓存(旧 test_mod)→ 执行 code_v2inc(+2)
+     = 32;修复后:缓存失效 → 重新 dlopen 补丁 so(test_mod_v2)→ +7 = 37。
+     物化 A 需在 commit 前已 ACTIVE(缓存已加载 test_mod)——commit 的
+     quiesce 会墓碑它,故先墓碑再物化一次,让缓存命中且 A 存活。 ---- */
+static void test_tx_commit_invalidates_mods(void) {
+  char err[256];
+  MT_CHECK(build_base() == 0);
+  MT_CHECK(build_patch_inv() == 0);
+  mosaic_runtime *rt = mosaic_runtime_open(BASE_PATH, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  /* v1:物化 A ×3 → 3 → 墓碑 → 物化 A 再次(3,mods 缓存命中 test_mod) */
+  mosaic_fn_obj *f = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(f != NULL);
+  if (!f) { mosaic_runtime_close(rt); return; }
+  for (int i = 0; i < 3; i++) mosaic_fn_execute(f, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)f->state, 3);
+  MT_CHECK(mosaic_fn_tombstone(rt, f) == 0);
+  f = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(f != NULL);
+  if (!f) { mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)f->state, 3);
+  /* 补丁1(so=test_mod_v2,gen2,code_off 4 = +7,transform ×10) */
+  mosaic_tx *tx = mosaic_tx_begin(rt, PATCH_INV_PATH, err, sizeof err);
+  MT_CHECK(tx != NULL);
+  if (!tx) { mosaic_fn_tombstone(rt, f); mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx, err, sizeof err) == 0);
+  /* commit 的 quiesce 已墓碑 f(此后不得再触碰);物化 A → 迁移 3 ×10 = 30;
+     执行必须走新 .so(test_mod_v2 v2inc7 +7 = 37) */
+  mosaic_fn_obj *a = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a != NULL);
+  if (!a) { mosaic_tx_free(tx); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a->state, 30);
+  mosaic_fn_execute(a, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a->state, 37);
+  MT_CHECK(mosaic_fn_tombstone(rt, a) == 0);
+  MT_CHECK(mosaic_tx_rollback(tx, err, sizeof err) == 0);
+  mosaic_tx_free(tx);
+  mosaic_runtime_close(rt);
+}
+
+/* ---- 8. I-2 回归:多补丁下 find_module_active 必须解析到**最新**补丁的
+     so_path。修复前顺序扫描 tx_packs 返回 patch1 记录(so=test_mod_v2)→
+     执行 +7 = 177;修复后反向扫描返回 patch2 记录(so=test_mod_v3)→
+     +13 = 183。同时验证二次迁移源(C-1):17 → ×10 = 170。 ---- */
+static void test_tx_multi_patch_latest_so(void) {
+  char err[256];
+  MT_CHECK(build_base() == 0);
+  MT_CHECK(build_patch_ls1() == 0);
+  MT_CHECK(build_patch_ls2() == 0);
+  mosaic_runtime *rt = mosaic_runtime_open(BASE_PATH, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  /* v1:物化 A ×1 → 1,墓碑(状态 1 进 base blob) */
+  mosaic_fn_obj *f = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(f != NULL);
+  if (!f) { mosaic_runtime_close(rt); return; }
+  mosaic_fn_execute(f, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)f->state, 1);
+  MT_CHECK(mosaic_fn_tombstone(rt, f) == 0);
+  /* 补丁1(so=test_mod_v2,gen2):迁移 1 ×10 = 10;执行 +7 = 17 */
+  mosaic_tx *tx1 = mosaic_tx_begin(rt, PATCH_LS1_PATH, err, sizeof err);
+  MT_CHECK(tx1 != NULL);
+  if (!tx1) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx1, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx1, err, sizeof err) == 0);
+  mosaic_fn_obj *a1 = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a1 != NULL);
+  if (!a1) { mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a1->state, 10);
+  mosaic_fn_execute(a1, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a1->state, 17);
+  MT_CHECK(mosaic_fn_tombstone(rt, a1) == 0);   /* 活跃状态 17 → patch1 blob */
+  /* 补丁2(so=test_mod_v3,gen3):迁移活跃 17 ×10 = 170 */
+  mosaic_tx *tx2 = mosaic_tx_begin(rt, PATCH_LS2_PATH, err, sizeof err);
+  MT_CHECK(tx2 != NULL);
+  if (!tx2) { mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK(mosaic_tx_validate(tx2, err, sizeof err) == 0);
+  MT_CHECK(mosaic_tx_commit(tx2, err, sizeof err) == 0);
+  mosaic_fn_obj *a2 = mosaic_fn_materialize(rt, A_ID);
+  MT_CHECK(a2 != NULL);
+  if (!a2) { mosaic_tx_free(tx2); mosaic_tx_free(tx1); mosaic_runtime_close(rt); return; }
+  MT_CHECK_EQ_U64(*(u32 *)a2->state, 170);
+  /* 执行必须走**最新**补丁 so:test_mod_v3 v3inc13 → 183;
+     修复前拿 patch1 的 test_mod_v2 so_path → 177 */
+  mosaic_fn_execute(a2, 0, NULL);
+  MT_CHECK_EQ_U64(*(u32 *)a2->state, 183);
+  MT_CHECK(mosaic_fn_tombstone(rt, a2) == 0);
+  MT_CHECK(mosaic_tx_rollback(tx2, err, sizeof err) == 0);
+  mosaic_tx_free(tx2);
+  MT_CHECK(mosaic_tx_rollback(tx1, err, sizeof err) == 0);
+  mosaic_tx_free(tx1);
+  mosaic_runtime_close(rt);
+}
+
 int main(int argc, char **argv) {
-  if (argc < 2) { fprintf(stderr, "usage: %s <test_mod.so>\n", argv[0]); return 2; }
+  if (argc < 4) {
+    fprintf(stderr, "usage: %s <test_mod.so> <test_mod_v2.so> <test_mod_v3.so>\n", argv[0]);
+    return 2;
+  }
   SO_PATH = argv[1];
+  V2_PATH = argv[2];
+  V3_PATH = argv[3];
   MT_RUN(test_full_lifecycle);
   MT_RUN(test_begin_rejections);
   MT_RUN(test_validate_rejections);
   MT_RUN(test_abort_no_side_effects);
   MT_RUN(test_dispatch_mixed_versions);
   MT_RUN(test_commit_then_immediate_demote);
+  MT_RUN(test_tx_multi_commit_migration);
+  MT_RUN(test_tx_commit_invalidates_mods);
+  MT_RUN(test_tx_multi_patch_latest_so);
   return MT_RESULT() ? 0 : 1;
 }

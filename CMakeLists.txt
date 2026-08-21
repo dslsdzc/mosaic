@@ -50,6 +50,12 @@ add_test(NAME test_working_set COMMAND test_working_set)
 
 add_library(test_mod MODULE tests/test_mod.c)
 target_include_directories(test_mod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# M2-2b 修复回归:多补丁 so 路由(test_mod_v2/v3 的 code_off 4 语义与 test_mod
+# 不同——+7 / +13,补丁 so_path 指向它们时物化必须 dlopen 新 .so)
+add_library(test_mod_v2 MODULE tests/test_mod_v2.c)
+target_include_directories(test_mod_v2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(test_mod_v3 MODULE tests/test_mod_v3.c)
+target_include_directories(test_mod_v3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_library(test_badmod MODULE tests/test_badmod.c)
 target_include_directories(test_badmod PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -104,6 +110,8 @@ target_include_directories(test_genroute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 add_test(NAME test_genroute COMMAND test_genroute)
 
 # M2-2b:补丁 pack 事务 API + 状态迁移 + 混合版本共存 + demote 回滚
+# 修复回归:二次 commit 迁移源(C-1)、commit 后 mods 缓存失效(I-1)、多补丁
+# 最新 so 路由(I-2)——需要 test_mod_v2/v3 的 so 路径参数
 add_executable(test_tx tests/test_tx.c)
 target_link_libraries(test_tx mosaic_core)
-add_test(NAME test_tx COMMAND test_tx $<TARGET_FILE:test_mod>)
+add_test(NAME test_tx COMMAND test_tx $<TARGET_FILE:test_mod> $<TARGET_FILE:test_mod_v2> $<TARGET_FILE:test_mod_v3>)

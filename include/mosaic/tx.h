@@ -19,6 +19,13 @@
  *             -1 + errbuf 且路由已还原、补丁不转持(tx 可 abort)。
  * - rollback: demote——路由切回旧表、补丁 pack 从 rt->tx_packs 移除并 unmap
  *             (记录在磁盘仍在,重开可再 begin)。
+ *             纪律 1(LIFO):多事务并存时按提交顺序**逆序** rollback(先提交的
+ *             后撤销);乱序 demote 会使后续路由退化(find_function_active 的
+ *             代核对保证不崩——路由命中但无对应代记录时回落 base,但活跃
+ *             状态会回到旧形态)。
+ *             纪律 2:rollback 前应先墓碑残留的 v2 ACTIVE 对象——否则其后续
+ *             墓碑(在 rollback 之后,解析回落 base 记录)会把 v2 形态状态
+ *             写进 base blob,污染 v1 恢复语义。
  * - abort:    未 commit 的 tx 释放补丁 mmap + 探测 so/abi(dlclose),无运行时
  *             副作用。free 是唯一释放入口:abort 不释放句柄。
  *
