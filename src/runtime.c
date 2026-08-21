@@ -173,6 +173,12 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
     free(m);
     m = nx;
   }
+  /* M2-3 修(ASan):state 是 arena_alloc 的独立 malloc,close 须先释放每个
+     活动 fn 的 state(否则并行物化 → ASan 报泄漏)。必须在 slab 释放之前做:
+     fn_obj 本体在 slab 里。墓碑路径先 ws_remove 再 free(state),因此 ws 中
+     存活的 fn 其 state 必未释放,本循环无双重释放。 */
+  for (u64 i = 0; i < rt->ws.cap; i++)
+    if (rt->ws.vals[i] && rt->ws.vals[i]->state) { free(rt->ws.vals[i]->state); rt->ws.vals[i]->state = NULL; }
   for (struct slab *s = rt->slabs; s; ) { struct slab *nx = s->next; free(s->start); free(s); s = nx; }
   free(rt->ws.keys); free(rt->ws.vals);
   /* M2-2a:generation 路由表(NULL = 无更新);gen_route_free 释放内部数组,

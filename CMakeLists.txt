@@ -6,6 +6,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+find_package(Threads REQUIRED)
+
 add_library(mosaic_core STATIC
   src/runtime.c
   src/pack_reader.c
@@ -19,9 +21,11 @@ add_library(mosaic_core STATIC
   src/deps.c
   src/genroute.c
   src/tx.c
+  src/sched.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(mosaic_core PRIVATE m dl)
+# M2-3:sched.c 仅 libc + pthread(静态库的 PRIVATE 链接依赖会传导到最终链接行)
+target_link_libraries(mosaic_core PRIVATE m dl Threads::Threads)
 
 enable_testing()
 
@@ -115,3 +119,10 @@ add_test(NAME test_genroute COMMAND test_genroute)
 add_executable(test_tx tests/test_tx.c)
 target_link_libraries(test_tx mosaic_core)
 add_test(NAME test_tx COMMAND test_tx $<TARGET_FILE:test_mod> $<TARGET_FILE:test_mod_v2> $<TARGET_FILE:test_mod_v3>)
+
+# M2-3:DAG 任务调度器(线程池 + 依赖/优先级/亲和性/取消/checkpoint)
+# 并行物化集成用例需要 test_mod.so fixture + mosaic_internal.h(ACTIVE 状态断言)
+add_executable(test_sched tests/test_sched.c)
+target_link_libraries(test_sched mosaic_core)
+target_include_directories(test_sched PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_sched COMMAND test_sched $<TARGET_FILE:test_mod>)
