@@ -53,3 +53,7 @@ add_executable(test_lifecycle tests/test_lifecycle.c)
 target_link_libraries(test_lifecycle mosaic_core)
 target_include_directories(test_lifecycle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)  # 偏差 D-3:ws_find 断言
 add_test(NAME test_lifecycle COMMAND test_lifecycle $<TARGET_FILE:test_mod> $<TARGET_FILE:test_badmod>)
+
+add_executable(test_trigger tests/test_trigger.c)
+target_link_libraries(test_trigger mosaic_core)
+add_test(NAME test_trigger COMMAND test_trigger $<TARGET_FILE:test_mod>)
