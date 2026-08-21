@@ -61,8 +61,9 @@ static void test_arena(void) {
 }
 
 static void test_cluster_removal(void) {
-  /* 开放寻址簇删除回归测试:cap=16,id 1/17/33 全落槽 1(线性探测 1,2,3)。
-     删除中间的 17 后,33 必须仍然可查(后移修复)。 */
+  /* 开放寻址簇删除回归测试:cap=16,键位混合后 id 1/17/33 仍同余碰撞成簇
+     (三个键落同一槽,线性探测占连续三槽)。删除中间的 17 后,33 必须仍然
+     可查(后移修复)。 */
   mosaic_runtime rt; memset(&rt, 0, sizeof rt);
   for (u64 id = 1; id <= 33; id += 16) {   /* 1, 17, 33 */
     struct mosaic_fn_obj *f = fn_alloc(&rt);
