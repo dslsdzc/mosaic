@@ -3,7 +3,7 @@
 #include "mosaic/base.h"
 
 #define MOSAIC_PACK_MAGIC   0x41534F4Du  /* "MOSA" LE */
-#define MOSAIC_PACK_VERSION 1
+#define MOSAIC_PACK_VERSION 2   /* v2:event_names 表按名排序(二分查找前提),触发器 event_id 为排序位置 */
 
 /* ---- Pack header (256B, LE) ---- */
 enum {

@@ -130,8 +130,12 @@ static void test_event_lookup(void) {
   mosaic_runtime *rt = mosaic_runtime_open(PACK_PATH, err, sizeof err);
   MT_CHECK(rt != NULL);
   if (!rt) return;
-  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "player_join"), 0);
-  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "entity_spawn"), 3);
+  /* 事件 id = 排序位置:block_break=0, entity_spawn=1, item_use=2, player_join=3
+     (注册顺序:player_join, block_break, item_use, entity_spawn) */
+  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "player_join"), 3);
+  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "entity_spawn"), 1);
+  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "item_use"), 2);
+  MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "block_break"), 0);
   MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "unknown_event"), MOSAIC_U32_NONE);
   mosaic_runtime_close(rt);
 }

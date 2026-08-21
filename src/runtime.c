@@ -81,17 +81,25 @@ const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_
 
 u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
   if (!rt || !name) return MOSAIC_U32_NONE;
-  u32 ec = hdr_event_count(rt->map);
+  u64 ec = hdr_event_count(rt->map);
   u64 eoff = hdr_event_names_off(rt->map);
   u64 base = hdr_meta_off(rt->map);
-  for (u32 i = 0; i < ec; i++) {
-    const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + (u64)i * MN_SIZE);
+  size_t nl = strlen(name);
+  /* 二分查找:event_names 表在构建期按名排序(v2),事件 id = 排序位置。
+     比较用显式长度 + memcmp 前缀,长度不同天然分序——前缀/截断串不会误匹配 */
+  u64 lo = 0, hi = ec;
+  while (lo < hi) {
+    u64 mid = lo + (hi - lo) / 2;
+    const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + mid * MN_SIZE);
     u32 o = mn_off(en), l = mn_len(en);
+    if (base + o + l > rt->map_len) { ((mosaic_runtime *)rt)->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
     const char *p = (const char *)(rt->map + base + o);
-    /* strcmp 会越过 NUL 窗口读到 map 外;改 strncmp 限定窗口内比较,并同时确认
-       name 与注册名窗口尾均为 NUL——否则 "player_joinx" 会误匹配 "player_join" */
-    if (base + o + l + 1 <= rt->map_len && strncmp(name, p, l) == 0 && name[l] == '\0' && p[l] == '\0')
-      return i;
+    size_t c = l < nl ? (size_t)l : nl;
+    int r = memcmp(name, p, c);
+    if (r == 0) r = (nl > (size_t)l) - (nl < (size_t)l);
+    if (r == 0) return (u32)mid;                 /* 名字匹配 → id = 排序位置 */
+    if (r < 0) hi = mid; else lo = mid + 1;
   }
+  ((mosaic_runtime *)rt)->last_err = MOSAIC_ERR_NOT_FOUND;   /* const API 下显式解写错误槽 */
   return MOSAIC_U32_NONE;
 }

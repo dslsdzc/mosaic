@@ -148,14 +148,61 @@ static int check_dupes(const mosaic_function_record *fns, u64 n, char *err, size
   return 0;
 }
 
+/* 长度感知字符串比较:memcmp 前缀,相等则比长度——与运行时二分同一语义,
+   名字互异时与 strcmp 序一致(唯一性要求保证全序,供排序与重名检测) */
+static int ev_cmp(mosaic_pack_builder *b, const mosaic_event_name *x, const mosaic_event_name *y) {
+  const char *sx = b->meta + mn_off(x), *sy = b->meta + mn_off(y);
+  u32 lx = mn_len(x), ly = mn_len(y);
+  u32 c = lx < ly ? lx : ly;
+  int r = memcmp(sx, sy, c);
+  if (r) return r;
+  return (int)lx - (int)ly;
+}
+
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen) {
   if (!b) { builder_err(errbuf, errlen, "null builder"); return -1; }
-  if (b->event_count > 64) { builder_err(errbuf, errlen, "too many events (>64)"); return -1; }
+  if (b->event_count > MOSAIC_MAX_EVENTS) { builder_err(errbuf, errlen, "too many events (>64)"); return -1; }
   if (b->failed || b->mod_cursor != b->module_count || b->fn_cursor != b->fn_count ||
       b->trig_cursor != b->trigger_count || b->dep_cursor != b->dep_count ||
       b->event_cursor != b->event_count) {
     builder_err(errbuf, errlen, "record count mismatch (fill before finish)");
     return -1;
+  }
+
+  /* ---- 事件名排序:按名升序(长度感知比较;≤64 个,插入排序足够)。
+     事件 id = 排序后位置;reg_to_sorted[注册id] = 排序后位置,供触发器重映射。
+     comp 伴随数组随 event_names 移动,记录各位置条目的注册 id。 ---- */
+  u32 reg_to_sorted[MOSAIC_MAX_EVENTS];
+  u32 comp[MOSAIC_MAX_EVENTS];
+  for (u32 i = 0; i < b->event_count; i++) { reg_to_sorted[i] = i; comp[i] = i; }
+  for (u32 i = 1; i < b->event_count; i++) {
+    mosaic_event_name cur = b->event_names[i];
+    u32 j = i;
+    while (j > 0 && ev_cmp(b, &b->event_names[j - 1], &cur) > 0) {
+      b->event_names[j] = b->event_names[j - 1];
+      u32 r = comp[j - 1];      /* 被右移条目的注册 id */
+      comp[j] = r;
+      reg_to_sorted[r] = j;     /* 该条目现在位于位置 j */
+      j--;
+    }
+    b->event_names[j] = cur;
+    comp[j] = i;
+    reg_to_sorted[i] = j;
+  }
+  /* 重名拒绝:排序后相邻条目名字相等 → 二分查找要求名字唯一 */
+  for (u32 i = 1; i < b->event_count; i++)
+    if (ev_cmp(b, &b->event_names[i - 1], &b->event_names[i]) == 0) {
+      builder_err(errbuf, errlen, "duplicate event name");
+      return -1;
+    }
+  /* 触发器重映射:注册顺序 id → 排序后 id(引用不存在的注册 id 一并拒绝) */
+  for (u64 k = 0; k < b->trigger_count; k++) {
+    u32 old = mt_event_id(&b->triggers[k]);
+    if (old >= b->event_count) {
+      builder_err(errbuf, errlen, "trigger references unknown event");
+      return -1;
+    }
+    mt_set_event(&b->triggers[k], reg_to_sorted[old]);
   }
 
   qsort(b->mods, (size_t)b->module_count, sizeof *b->mods, cmp_mod);

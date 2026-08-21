@@ -71,15 +71,17 @@ static void test_built_pack(void) {
   fseek(f, (long)hdr_trigger_off(hdr), SEEK_SET);
   mosaic_trigger_entry trigs[3];
   MT_CHECK(fread(trigs, 1, sizeof trigs, f) == sizeof trigs);
-  /* 按 (event,fn) 排序:event0 两条在前,event1 一条在后 */
+  /* 触发器 event_id 已由 builder 从注册顺序重映射为排序位置:
+     "block_break"(注册 1 → 排序 0)一条在前,"player_join"(注册 0 → 排序 1)两条在后,
+     再按 (event,fn) 排序 */
   MT_CHECK_EQ_U64(mt_event_id(&trigs[0]), 0);
-  MT_CHECK_EQ_U64(mt_event_id(&trigs[1]), 0);
+  MT_CHECK_EQ_U64(mt_event_id(&trigs[1]), 1);
   MT_CHECK_EQ_U64(mt_event_id(&trigs[2]), 1);
-  MT_CHECK_EQ_U64(mt_fn_id(&trigs[0]), 10ull << 32 | 0);
-  MT_CHECK_EQ_U64(mt_fn_id(&trigs[1]), 10ull << 32 | 1);
-  MT_CHECK_EQ_U64(mt_fn_id(&trigs[2]), 20ull << 32 | 0);
+  MT_CHECK_EQ_U64(mt_fn_id(&trigs[0]), 20ull << 32 | 0);
+  MT_CHECK_EQ_U64(mt_fn_id(&trigs[1]), 10ull << 32 | 0);
+  MT_CHECK_EQ_U64(mt_fn_id(&trigs[2]), 10ull << 32 | 1);
 
-  /* 事件名逐项落盘:两项均写入(len>0;meta 首个字符串偏移可为 0,故不按 off!=0 判断),
+  /* 事件名表按名排序落盘:"block_break" 在前,"player_join" 在后(注册顺序相反);
      偏移互异,且 meta blob 中对应偏移的字符串与名字一致 */
   fseek(f, (long)hdr_event_names_off(hdr), SEEK_SET);
   mosaic_event_name evs[2];
@@ -87,14 +89,14 @@ static void test_built_pack(void) {
   MT_CHECK(mn_len(&evs[0]) != 0);
   MT_CHECK(mn_len(&evs[1]) != 0);
   MT_CHECK(mn_off(&evs[0]) != mn_off(&evs[1]));
-  MT_CHECK_EQ_U64(mn_len(&evs[0]), (u64)strlen("player_join"));
-  MT_CHECK_EQ_U64(mn_len(&evs[1]), (u64)strlen("block_break"));
+  MT_CHECK_EQ_U64(mn_len(&evs[0]), (u64)strlen("block_break"));
+  MT_CHECK_EQ_U64(mn_len(&evs[1]), (u64)strlen("player_join"));
 
   fseek(f, (long)hdr_meta_off(hdr), SEEK_SET);
   u8 meta[1024];
   MT_CHECK(fread(meta, 1, (size_t)hdr_meta_len(hdr), f) == hdr_meta_len(hdr));
-  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[0]), "player_join") == 0);
-  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[1]), "block_break") == 0);
+  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[0]), "block_break") == 0);
+  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[1]), "player_join") == 0);
 
   fclose(f);
 }
@@ -143,6 +145,28 @@ static void test_duplicate_module_rejected(void) {
   mosaic_pack_builder_free(b);
 }
 
+static void test_duplicate_event_rejected(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_dupev.pack", 1, 0, 0, 0, 2);
+  mosaic_pack_builder_add_event(b, "tick");
+  mosaic_pack_builder_add_event(b, "tick");  /* 重名:二分要求名字唯一 */
+  mosaic_pack_builder_add_module(b, 10, 1, "a", "/tmp/a.so");
+  MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) != 0);
+  MT_CHECK(strstr(err, "duplicate event name") != NULL);
+  mosaic_pack_builder_free(b);
+}
+
+static void test_trigger_unknown_event_rejected(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_evref.pack", 1, 0, 1, 0, 1);
+  mosaic_pack_builder_add_event(b, "tick");
+  mosaic_pack_builder_add_module(b, 10, 1, "a", "/tmp/a.so");
+  mosaic_pack_builder_add_trigger(b, 5, 10ull << 32 | 0);  /* 引用不存在的注册 id */
+  MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) != 0);
+  MT_CHECK(strstr(err, "trigger references unknown event") != NULL);
+  mosaic_pack_builder_free(b);
+}
+
 static void test_too_many_events_rejected(void) {
   char err[256];
   mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_ev65.pack", 1, 0, 0, 0, 65);
@@ -168,6 +192,8 @@ int main(void) {
   MT_RUN(test_duplicate_fn_rejected);
   MT_RUN(test_multi_owner_deps);
   MT_RUN(test_duplicate_module_rejected);
+  MT_RUN(test_duplicate_event_rejected);
+  MT_RUN(test_trigger_unknown_event_rejected);
   MT_RUN(test_too_many_events_rejected);
   return MT_RESULT() ? 0 : 1;
 }

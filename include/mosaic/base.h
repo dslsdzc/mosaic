@@ -29,4 +29,5 @@ enum {
   MOSAIC_ERR_IO = 7,
 };
 #define MOSAIC_U32_NONE 0xFFFFFFFFu
+#define MOSAIC_MAX_EVENTS 64   /* 事件名上限(名称表 + 触发表引用) */
 #endif
