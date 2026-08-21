@@ -79,7 +79,7 @@ const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_
   return (const char *)(rt->map + base + off);
 }
 
-u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
+u32 mosaic_runtime_event_id(mosaic_runtime *rt, const char *name) {
   if (!rt || !name) return MOSAIC_U32_NONE;
   u64 ec = hdr_event_count(rt->map);
   u64 eoff = hdr_event_names_off(rt->map);
@@ -92,7 +92,7 @@ u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
     u64 mid = lo + (hi - lo) / 2;
     const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + mid * MN_SIZE);
     u32 o = mn_off(en), l = mn_len(en);
-    if (base + o + l > rt->map_len) { ((mosaic_runtime *)rt)->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
+    if (base + o + l > rt->map_len) { rt->last_err = MOSAIC_ERR_BAD_PACK; return MOSAIC_U32_NONE; }
     const char *p = (const char *)(rt->map + base + o);
     size_t c = l < nl ? (size_t)l : nl;
     int r = memcmp(name, p, c);
@@ -100,6 +100,6 @@ u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
     if (r == 0) return (u32)mid;                 /* 名字匹配 → id = 排序位置 */
     if (r < 0) hi = mid; else lo = mid + 1;
   }
-  ((mosaic_runtime *)rt)->last_err = MOSAIC_ERR_NOT_FOUND;   /* const API 下显式解写错误槽 */
+  rt->last_err = MOSAIC_ERR_NOT_FOUND;   /* 未命中写错误槽(与 find_module/find_function 同惯例) */
   return MOSAIC_U32_NONE;
 }

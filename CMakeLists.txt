@@ -32,7 +32,8 @@ add_test(NAME test_builder COMMAND test_builder)
 
 add_executable(test_runtime tests/test_runtime.c)
 target_link_libraries(test_runtime mosaic_core)
-add_test(NAME test_runtime COMMAND test_runtime)
+# M-2:前缀对 tiebreak 用例需 dispatch 真实执行(≥1),沿用 test_trigger 的 fixture 传递模式
+add_test(NAME test_runtime COMMAND test_runtime $<TARGET_FILE:test_mod>)
 
 add_executable(test_index tests/test_index.c)
 target_link_libraries(test_index mosaic_core)

@@ -11,5 +11,5 @@ u64 mosaic_runtime_function_count(const mosaic_runtime *rt);
 const mosaic_module_record *mosaic_runtime_find_module(mosaic_runtime *rt, u64 module_id);
 const mosaic_function_record *mosaic_runtime_find_function(mosaic_runtime *rt, u64 fn_id);
 const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_module_record *m, u32 off);
-u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name);
+u32 mosaic_runtime_event_id(mosaic_runtime *rt, const char *name);
 #endif

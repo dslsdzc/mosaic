@@ -161,7 +161,12 @@ static int ev_cmp(mosaic_pack_builder *b, const mosaic_event_name *x, const mosa
 
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen) {
   if (!b) { builder_err(errbuf, errlen, "null builder"); return -1; }
-  if (b->event_count > MOSAIC_MAX_EVENTS) { builder_err(errbuf, errlen, "too many events (>64)"); return -1; }
+  if (b->event_count > MOSAIC_MAX_EVENTS) {
+    char msg[64];
+    snprintf(msg, sizeof msg, "too many events (max %d)", MOSAIC_MAX_EVENTS);
+    builder_err(errbuf, errlen, "%s", msg);
+    return -1;
+  }
   if (b->failed || b->mod_cursor != b->module_count || b->fn_cursor != b->fn_count ||
       b->trig_cursor != b->trigger_count || b->dep_cursor != b->dep_count ||
       b->event_cursor != b->event_count) {
