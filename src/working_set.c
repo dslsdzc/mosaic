@@ -90,7 +90,9 @@ struct mosaic_fn_obj *ws_find(mosaic_runtime *rt, u64 fn_id) {
 
 void ws_insert(mosaic_runtime *rt, struct mosaic_fn_obj *fn) {
   if (ws_find(rt, fn->fn_id)) return;
-  if (rt->ws.len * 10 >= rt->ws.cap * 7) ws_grow(rt);
+  if (rt->ws.len * 10 >= rt->ws.cap * 7) {
+    if (ws_grow(rt) != 0) return;   /* OOM:ws_grow 已设 last_err,跳过插入 */
+  }
   u64 h = fn->fn_id & (rt->ws.cap - 1);
   while (rt->ws.keys[h]) h = (h + 1) & (rt->ws.cap - 1);
   rt->ws.keys[h] = fn->fn_id; rt->ws.vals[h] = fn;
