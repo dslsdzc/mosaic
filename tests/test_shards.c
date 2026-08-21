@@ -22,6 +22,9 @@ static const char *SO_PATH;
 #define P2_PATH "/tmp/mosaic_shard_p2.pack"
 #define OVL_PATH "/tmp/mosaic_shard_ovl.pack"
 #define BAD_PATH "/tmp/mosaic_shard_bad.pack"
+#define OVLA_PATH "/tmp/mosaic_shard_ovla.pack"   /* 模块 0,5 → 范围 0..5 */
+#define OVLE_PATH "/tmp/mosaic_shard_ovle.pack"   /* 空模块表 → 空范围 (1,0) */
+#define OVLB_PATH "/tmp/mosaic_shard_ovlb.pack"   /* 模块 3,8 → 范围 3..8 */
 
 /* P0:模块 10(fns 0,1)+ 模块 20(fn 0);P1:模块 30(fn 0);P2:模块 40(fn 0)。
    订阅:player_join → 10|0, 10|1, 20|0, 30|0, 40|0(共 5);block_break → 20|0。 */
@@ -263,9 +266,74 @@ static void test_reject_event_mismatch(void) {
 /* I-1 回归:[有效, 不存在, 有效] 三路径。修复前 calloc 清零使第 3 个未处理
    条目 fd == 0,失败清理循环 close(0) 直接关掉 stdin;修复后必须先预置
    全部条目 fd = -1 才打开。断言:open_many 返回 NULL,且返回后 stdin 仍开着。 */
+/* M1.5-A 复评回归:空 pack 夹在两个重叠的非空 pack 之间时,相邻两两检查
+   会跳过空范围而漏掉 A∩B(A(0..5)、E(空)、B(3..8) 相邻对都含空 pack,
+   但 A 与 B 实际重叠)。修复:跟踪上一个非空 pack 下标,跳过空范围后仍与
+   最近的非空 pack 比较。附带验证去掉空 pack 时 [A,B] 直接相邻也拒绝;
+   module_id=0 合法(fn_id = 0|1 ≠ 0)。 */
+static int build_ovla(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(OVLA_PATH, 2, 2, 0, 0, 2);
+  mosaic_pack_builder_add_event(b, "player_join");
+  mosaic_pack_builder_add_event(b, "block_break");
+  mosaic_pack_builder_add_module(b, 0, 1, "mod_0", SO_PATH);   /* module_id=0 合法 */
+  mosaic_pack_builder_add_module(b, 5, 1, "mod_5", SO_PATH);
+  mosaic_pack_builder_add_fn(b, 0, 1, 0, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE);   /* fn_id=1≠0 */
+  mosaic_pack_builder_add_fn(b, 5, 0, 0, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE);
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  mosaic_pack_builder_free(b);
+  if (rc) fprintf(stderr, "build ovla: %s\n", err);
+  return rc;
+}
+
+static int build_ovle(void) {   /* 空模块表:module_count=0 → 空范围 */
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(OVLE_PATH, 0, 0, 0, 0, 2);
+  mosaic_pack_builder_add_event(b, "player_join");
+  mosaic_pack_builder_add_event(b, "block_break");
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  mosaic_pack_builder_free(b);
+  if (rc) fprintf(stderr, "build ovle: %s\n", err);
+  return rc;
+}
+
+static int build_ovlb(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(OVLB_PATH, 2, 2, 0, 0, 2);
+  mosaic_pack_builder_add_event(b, "player_join");
+  mosaic_pack_builder_add_event(b, "block_break");
+  mosaic_pack_builder_add_module(b, 3, 1, "mod_3", SO_PATH);
+  mosaic_pack_builder_add_module(b, 8, 1, "mod_8", SO_PATH);
+  mosaic_pack_builder_add_fn(b, 3, 0, 0, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE);
+  mosaic_pack_builder_add_fn(b, 8, 0, 0, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE);
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  mosaic_pack_builder_free(b);
+  if (rc) fprintf(stderr, "build ovlb: %s\n", err);
+  return rc;
+}
+
+static void test_shards_overlap_across_empty(void) {
+  char err[256];
+  MT_CHECK(build_ovla() == 0 && build_ovle() == 0 && build_ovlb() == 0);
+  /* [A, E, B]:排序后 A(0..5)、E(空)、B(3..8)。旧实现相邻两两检查时两对
+     都含空范围被跳过,A∩B 从未被比较 → open_many 会误接受。 */
+  const char *paths3[3] = { OVLA_PATH, OVLE_PATH, OVLB_PATH };
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths3, 3, err, sizeof err);
+  MT_CHECK(rt == NULL);
+  if (rt) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(strstr(err, "overlapping") != NULL);
+  /* 无空 pack 夹在中间:[A, B] 直接相邻(范围 0..5 与 3..8 重叠),同样拒绝 */
+  const char *paths2[2] = { OVLA_PATH, OVLB_PATH };
+  rt = mosaic_runtime_open_many(paths2, 2, err, sizeof err);
+  MT_CHECK(rt == NULL);
+  if (rt) { mosaic_runtime_close(rt); return; }
+  MT_CHECK(strstr(err, "overlapping") != NULL);
+}
+
 static void test_open_many_fail_keeps_stdin(void) {
   char err[256];
   MT_CHECK(build_p0() == 0);
+  unlink("/tmp/mosaic_shard_missing.pack");   /* 防残留文件导致 open 成功误报 */
   const char *paths[3] = { P0_PATH, "/tmp/mosaic_shard_missing.pack", P0_PATH };
   MT_CHECK(fcntl(0, F_GETFD) >= 0);   /* 前置:stdin 开着 */
   mosaic_runtime *rt = mosaic_runtime_open_many(paths, 3, err, sizeof err);
@@ -300,5 +368,6 @@ int main(int argc, char **argv) {
   MT_RUN(test_reject_event_mismatch);
   MT_RUN(test_no_packs_and_single);
   MT_RUN(test_open_many_fail_keeps_stdin);
+  MT_RUN(test_shards_overlap_across_empty);
   return MT_RESULT() ? 0 : 1;
 }

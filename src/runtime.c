@@ -115,16 +115,22 @@ mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_pack
   }
   /* 排序(按 min),rt->packs 顺序即范围表顺序 */
   qsort(packs, n_packs, sizeof *packs, cmp_pack_view);
-  /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后相邻两两检查即可;
-     M-1:空范围 (1,0) 的 max < min,直接跳过——它与含 module_id=0 的 pack
-     相邻时(min=0)双向条件会误报重叠 */
-  for (size_t i = 1; i < n_packs; i++) {
-    if (packs[i - 1].max_mod < packs[i - 1].min_mod) continue;   /* 空范围 */
-    if (packs[i].max_mod < packs[i].min_mod) continue;           /* 空范围 */
-    if (packs[i - 1].min_mod <= packs[i].max_mod && packs[i].min_mod <= packs[i - 1].max_mod) {
+  /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后检查;空范围 (1,0)
+     的 max < min,直接跳过——它既不能与相邻 pack 误报重叠(含 module_id=0
+     的 pack 相邻时 min=0 的双向条件会误报),也不能阻断检查:空 pack 夹在
+     两个重叠的非空 pack 之间时(如 A(0,5)、空、B(3,8)),只比较相邻两两
+     会漏掉 A∩B。因此跟踪上一个非空 pack,跳过空范围仍与最近的非空 pack
+     比较(M1.5-A 复评)。 */
+  size_t prev = (size_t)-1;
+  for (size_t i = 0; i < n_packs; i++) {
+    if (packs[i].max_mod < packs[i].min_mod) continue;   /* 空范围,跳过 */
+    if (prev != (size_t)-1 &&
+        packs[prev].min_mod <= packs[i].max_mod &&
+        packs[i].min_mod <= packs[prev].max_mod) {
       if (errbuf && errlen) snprintf(errbuf, errlen, "overlapping pack module ranges");
       goto fail;
     }
+    prev = i;
   }
   /* 事件表一致性:所有 pack 与 packs[0] 逐条相同 */
   for (size_t i = 1; i < n_packs; i++) {
