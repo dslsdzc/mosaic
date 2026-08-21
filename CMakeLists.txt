@@ -57,3 +57,10 @@ add_test(NAME test_lifecycle COMMAND test_lifecycle $<TARGET_FILE:test_mod> $<TA
 add_executable(test_trigger tests/test_trigger.c)
 target_link_libraries(test_trigger mosaic_core)
 add_test(NAME test_trigger COMMAND test_trigger $<TARGET_FILE:test_mod>)
+
+# 偏差 D-9-1:简报 Step 5 的 CMake 块未含 src/ 私有头目录,但测试用 ws_find
+# (mosaic_internal.h 声明),缺它无法编译;沿用既有模式(test_lifecycle 等)。
+add_executable(test_ownership tests/test_ownership.c)
+target_link_libraries(test_ownership mosaic_core)
+target_include_directories(test_ownership PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_ownership COMMAND test_ownership $<TARGET_FILE:test_mod>)
