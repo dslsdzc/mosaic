@@ -10,9 +10,10 @@ static void set_err(mosaic_runtime *rt, u32 code, char *errbuf, size_t errlen, c
 }
 
 /* 校验并换算各表在 map 内的位置;失败返回 -1 并 set_err。
-   M1.5-A:map/map_len 改为入参(open_many 逐 pack 校验) */
-static int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
-                           char *errbuf, size_t errlen) {
+   M1.5-A:map/map_len 改为入参(open_many 逐 pack 校验)。
+   M2-2b:tx_begin 复用(补丁 pack 独立 mmap,同款校验)。 */
+int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
+                    char *errbuf, size_t errlen) {
   const u8 *h = map;
   if (hdr_magic(h) != MOSAIC_PACK_MAGIC) { set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "bad magic"); return -1; }
   if (hdr_version(h) != MOSAIC_PACK_VERSION) { set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "bad version"); return -1; }
@@ -47,8 +48,9 @@ static int cmp_pack_view(const void *a, const void *b_) {
 }
 
 /* 事件表逐条一致性(事件是宇宙级全局命名空间,dispatch 的 event_id 跨 pack 一致):
-   count、名字、顺序全部与 pack 0 相同;≤64 条,直接比较名字串 */
-static int event_tables_match(const struct pack_view *a, const struct pack_view *b) {
+   count、名字、顺序全部与 pack 0 相同;≤64 条,直接比较名字串
+   M2-2b:tx_begin 复用(base pack 0 vs 补丁 pack)。 */
+int event_tables_match(const struct pack_view *a, const struct pack_view *b) {
   const u8 *m0 = a->map, *m1 = b->map;
   u32 e0 = hdr_event_count(m0), e1 = hdr_event_count(m1);
   if (e0 != e1) return 0;
@@ -169,6 +171,12 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
   /* M2-2a:generation 路由表(NULL = 无更新);gen_route_free 释放内部数组,
      表体本身(M2-2b 由 tx 分配)在此一并释放 */
   if (rt->routes) { gen_route_free(rt->routes); free(rt->routes); }
+  /* M2-2b:已 commit 补丁 pack(未 rollback 的残留,如 close 前未 demote) */
+  for (size_t i = 0; i < rt->n_tx_packs; i++) {
+    munmap(rt->tx_packs[i].map, rt->tx_packs[i].map_len);
+    close(rt->tx_packs[i].fd);
+  }
+  free(rt->tx_packs);
   for (size_t i = 0; i < rt->n_packs; i++) {
     munmap(rt->packs[i].map, rt->packs[i].map_len);
     close(rt->packs[i].fd);
@@ -186,12 +194,16 @@ u64 mosaic_runtime_function_count(const mosaic_runtime *rt) {
   return total;
 }
 
-/* M1.5-A:ex 变体带 pack 参数(生命周期内部用,不依赖指针扫描) */
+/* M1.5-A:ex 变体带 pack 参数(生命周期内部用,不依赖指针扫描)。
+   M2-2b:pack 下标经 pack_view 解析(基础 pack 与 tx_packs 统一)——补丁模块
+   mod_load 读 so_path 时 pack = n_packs + i,落在补丁 pack。 */
 const char *module_string_ex(const mosaic_runtime *rt, size_t pack, const mosaic_module_record *m, u32 off) {
-  if (!rt || pack >= rt->n_packs || !m || off == 0) return NULL;
-  const u8 *map = rt->packs[pack].map;
+  if (!rt || !m || off == 0) return NULL;
+  const struct pack_view *pv = pack_view((mosaic_runtime *)rt, pack);
+  if (!pv) return NULL;
+  const u8 *map = pv->map;
   u64 base = hdr_meta_off(map);
-  if (base + off >= rt->packs[pack].map_len) return NULL;
+  if (base + off >= pv->map_len) return NULL;
   return (const char *)(map + base + off);
 }
 

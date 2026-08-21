@@ -84,8 +84,23 @@ struct mosaic_runtime {
   struct mosaic_fn_obj *ws_head, *ws_tail;
   struct slab *slabs;
   struct gen_route *routes;   /* fn_id → 活跃 generation 路由表(NULL = 无更新) */
+  /* M2-2b:已 commit 补丁 pack(结构同 pack_view;不进范围表——find_module_ex
+     等基础查询不感知;find_function_active/find_module_active 在其上解析活跃
+     代记录)。顺序 = commit 顺序;rollback 从中移除 + unmap。 */
+  struct pack_view *tx_packs;
+  size_t n_tx_packs;
   u32 last_err;
 };
+
+/* pack 下标解析:0..n_packs-1 = 基础 pack,>= n_packs = tx_packs[i - n_packs]
+   (find_function_active/find_module_active 的 out_pack 编码;lifecycle 的 blob
+   读写与 state_blob_append 经此统一解析,补丁记录的状态落补丁 pack blob)。 */
+static inline struct pack_view *pack_view(mosaic_runtime *rt, size_t i) {
+  if (!rt) return NULL;
+  if (i < rt->n_packs) return &rt->packs[i];
+  if (i - rt->n_packs < rt->n_tx_packs) return &rt->tx_packs[i - rt->n_packs];
+  return NULL;
+}
 
 /* 按 pack 访问映射;越界返回 NULL */
 static inline u8 *pack_map(mosaic_runtime *rt, size_t i) {
@@ -112,13 +127,30 @@ void arena_zalloc(mosaic_runtime *rt, size_t n, void **out);
 const mosaic_module_record *find_module_ex(mosaic_runtime *rt, u64 module_id, size_t *out_pack);
 const mosaic_function_record *find_function_ex(mosaic_runtime *rt, u64 fn_id, size_t *out_pack);
 
+/* index.c — M2-2b:活跃代记录解析。find_function_active:gen_route 命中 → 在
+   rt->tx_packs 中二分定位该 generation 的记录(补丁每 fn 单条,核对
+   mf_generation;out_pack = n_packs + tx 下标);未命中 → 既有 find_function_ex。
+   find_module_active:先查 tx_packs(已 commit 补丁的模块记录,so_path 等以补丁
+   为准),未命中回落基础 pack。 */
+const mosaic_function_record *find_function_active(mosaic_runtime *rt, u64 fn_id, size_t *out_pack);
+const mosaic_module_record *find_module_active(mosaic_runtime *rt, u64 module_id, size_t *out_pack);
+
+/* runtime.c — 布局/事件表校验(M2-2b tx_begin 复用:补丁 pack 是独立 mmap,
+   校验思路与 open_many 逐 pack 一致) */
+int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,
+                    char *errbuf, size_t errlen);
+int event_tables_match(const struct pack_view *a, const struct pack_view *b);
+
 /* runtime.c — M1.5-A:ex 变体带 pack 参数(不依赖指针扫描) */
 const char *module_string_ex(const mosaic_runtime *rt, size_t pack, const mosaic_module_record *m, u32 off);
 
-/* lifecycle.c — pack 参数:只对该 pack 的 map mremap */
+/* lifecycle.c — pack 参数:只对该 pack 的 map mremap;pack 经 pack_view 解析
+   (基础 pack 与 tx_packs 统一)。state_blob_append_pack:任意 pack_view 的核心
+   实现(M2-2b commit 写补丁 pack blob 用,补丁未转持前不在 rt->tx_packs) */
 const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id);
 void mod_unload(mosaic_runtime *rt, u64 module_id);
 int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 len, u32 *out_off);
+int state_blob_append_pack(mosaic_runtime *rt, struct pack_view *pv, const void *bytes, u32 len, u32 *out_off);
 /* 延迟 dlclose(缺陷 2):dlclose + free 所有 pending 条目并重建哈希表。
    只在安全点调用(dispatch/evict 末尾、close 前)——此时栈上无模块代码帧。 */
 void flush_pending_dlclose(mosaic_runtime *rt);

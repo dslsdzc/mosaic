@@ -35,9 +35,11 @@ static int gen_route_grow(struct gen_route *t) {
 }
 
 /* 建立/覆盖路由。gen == 0 拒绝(0 是 get 的"无条目"哨兵,写入会造成
-   条目存在但查不到的空洞语义)。扩容失败 → -1(旧表完好)。 */
+   条目存在但查不到的空洞语义);fn_id == 0 拒绝(与空槽哨兵对称,M2-2a 评审
+   Minor-1:fn_id=0 写入会创建"条目存在但探测遇空槽即停"的不可达空洞,
+   并虚增 len 破坏负载扩容判定)。扩容失败 → -1(旧表完好)。 */
 int gen_route_put(struct gen_route *t, u64 fn_id, u32 gen) {
-  if (!t || gen == 0) return -1;
+  if (!t || gen == 0 || fn_id == 0) return -1;
   if (t->cap) {
     u64 mask = t->cap - 1;
     u64 i = gen_route_key(fn_id) & mask;

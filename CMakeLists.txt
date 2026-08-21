@@ -18,6 +18,7 @@ add_library(mosaic_core STATIC
   src/eviction.c
   src/deps.c
   src/genroute.c
+  src/tx.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mosaic_core PRIVATE m dl)
@@ -101,3 +102,8 @@ add_executable(test_genroute tests/test_genroute.c)
 target_link_libraries(test_genroute mosaic_core)
 target_include_directories(test_genroute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_genroute COMMAND test_genroute)
+
+# M2-2b:补丁 pack 事务 API + 状态迁移 + 混合版本共存 + demote 回滚
+add_executable(test_tx tests/test_tx.c)
+target_link_libraries(test_tx mosaic_core)
+add_test(NAME test_tx COMMAND test_tx $<TARGET_FILE:test_mod>)

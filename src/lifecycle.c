@@ -116,9 +116,11 @@ const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   }
   /* M1.5-A:find_module_ex 给出归属 pack,module_string_ex 直接读该 pack 的 meta
      (公开 module_string 的 uintptr_t 指针扫描是 implementation-defined,生命周期
-     内部不依赖它) */
+     内部不依赖它)。
+     M2-2b:find_module_active——已 commit 补丁的模块记录优先(补丁模块的
+     so_path/version 以补丁为准,更新后可能指向新 .so) */
   size_t pack = 0;
-  const mosaic_module_record *rec = find_module_ex(rt, module_id, &pack);
+  const mosaic_module_record *rec = find_module_active(rt, module_id, &pack);
   if (!rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
   const char *path = module_string_ex(rt, pack, rec, mm_so_off(rec));
   if (!path) { rt->last_err = MOSAIC_ERR_ABI; return NULL; }
@@ -163,8 +165,11 @@ void mod_unload(mosaic_runtime *rt, u64 module_id) {
    故 blob 头部保留 4B 前缀,条目偏移恒 ≥ 4。materialize 恢复代码保持原文不变。
    M1.5-A:pack 参数——只对该 pack 的 map mremap(其他 pack 的指针不受影响,
    这是分片架构的额外好处);state_len 游标也随 pack 走(struct pack_view)。 */
-int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 len, u32 *out_off) {
-  struct pack_view *pv = &rt->packs[pack];
+/* M2-2b:核心实现按 pack_view 寻址(不假设 rt->packs)——补丁 pack 在 commit
+   前只由 tx 持有(不在 rt->tx_packs),state_blob_append_pack(rt, &tx->patch, ...)
+   直接写补丁 blob;转持后的补丁记录墓碑经 state_blob_append(pack = n_packs+i)
+   同样落到本实现(pack_view 解析)。 */
+int state_blob_append_pack(mosaic_runtime *rt, struct pack_view *pv, const void *bytes, u32 len, u32 *out_off) {
   const u8 *h = pv->map;
   u64 base = hdr_state_off(h);
   u64 cap = hdr_state_cap(h);
@@ -193,12 +198,21 @@ int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 le
   return 0;
 }
 
+/* pack 下标 → pack_view(基础 pack 与 tx_packs 统一,补丁记录经此写补丁 blob) */
+int state_blob_append(mosaic_runtime *rt, size_t pack, const void *bytes, u32 len, u32 *out_off) {
+  struct pack_view *pv = pack_view(rt, pack);
+  if (!pv) { if (rt) rt->last_err = MOSAIC_ERR_BAD_PACK; return -1; }
+  return state_blob_append_pack(rt, pv, bytes, len, out_off);
+}
+
 mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
   if (!rt) return NULL;
   /* 偏差 D-4a(Task 5 评审 ⚠️-1):fn_id==0 与 ws 哈希空槽哨兵冲突,禁止注入 */
   if (fn_id == 0) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
   size_t pack = 0;
-  const mosaic_function_record *rec = find_function_ex(rt, fn_id, &pack);
+  /* M2-2b:活跃代记录解析——gen_route 命中的 fn 走补丁 pack 记录,未命中走
+     基础 pack;out_pack 同时给出 blob 归属 pack(补丁记录 → tx_packs)。 */
+  const mosaic_function_record *rec = find_function_active(rt, fn_id, &pack);
   if (!rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return NULL; }
   mosaic_fn_obj *ex = ws_find(rt, fn_id);
   if (ex) return ex;   /* 已 ACTIVE:直接返回(幂等) */
@@ -222,13 +236,17 @@ mosaic_fn_obj *mosaic_fn_materialize(mosaic_runtime *rt, u64 fn_id) {
     state = p;
     u32 soff = mf_state_off(rec);
     if (soff != 0) {
-      /* TOMBSTONED → RESTORE:从 fn 所在 pack 的 state blob 读回 */
-      const u8 *h = rt->packs[pack].map;
-      u64 base = hdr_state_off(h);
-      if (base + soff + 4 <= rt->packs[pack].map_len) {
-        u32 len = rd_le32(rt->packs[pack].map + base + soff);
-        if (len <= sz && base + soff + 4 + len <= rt->packs[pack].map_len)
-          memcpy(state, rt->packs[pack].map + base + soff + 4, len);
+      /* TOMBSTONED → RESTORE:从记录归属 pack 的 state blob 读回(基础 pack 或
+         tx_packs,pack_view 统一解析;补丁记录的 v2 状态在补丁 blob) */
+      struct pack_view *pv = pack_view(rt, pack);
+      if (pv) {
+        const u8 *h = pv->map;
+        u64 base = hdr_state_off(h);
+        if (base + soff + 4 <= pv->map_len) {
+          u32 len = rd_le32(pv->map + base + soff);
+          if (len <= sz && base + soff + 4 + len <= pv->map_len)
+            memcpy(state, pv->map + base + soff + 4, len);
+        }
       }
     }
   }
@@ -263,10 +281,13 @@ int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
   /* 修正 D-10-2:state_blob_append 的 mremap(MREMAP_MAYMOVE)可能移动 pack 映射,
      使其他 fn 对象缓存的 rec 指针悬垂(Task 10 S2 冷包 1000 函数逐批墓碑
      实测 SIGSEGV——I-1 修复只重取了本函数自己的 rw,未保护其他对象的 rec)。
-     与 I-1 同一模式:入口按 fn_id 重取记录(经 find_function_ex 同时刷新
-     fn->pack 指向当前归属 pack),后续全部使用新鲜指针。 */
+     与 I-1 同一模式:入口按 fn_id 重取记录(经 find_function_active 同时刷新
+     fn->pack 指向当前归属 pack——v1/v2 都以活跃代解析为准),后续全部使用
+     新鲜指针。 */
   size_t pack = 0;
-  fn->rec = find_function_ex(rt, fn->fn_id, &pack);
+  /* M2-2b:活跃代解析——v2 fn 的墓碑走补丁记录、v1 fn 走基础记录(commit 的
+     quiesce 在路由切换前执行,因此墓碑 v1 对象时仍解析到基础记录) */
+  fn->rec = find_function_active(rt, fn->fn_id, &pack);
   if (!fn->rec) { rt->last_err = MOSAIC_ERR_NOT_FOUND; return -1; }
   fn->pack = (u32)pack;
   u16 fl = mf_flags(fn->rec);
@@ -280,7 +301,7 @@ int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
     u32 off = 0;
     if (state_blob_append(rt, pack, fn->state, fn->state_size, &off) != 0) {
       /* 回滚为 ACTIVE;失败路径 mremap 未发生,但统一重取指针杜绝任何悬垂写 */
-      rw = (mosaic_function_record *)find_function_ex(rt, fn->fn_id, &pack);
+      rw = (mosaic_function_record *)find_function_active(rt, fn->fn_id, &pack);
       fn->pack = (u32)pack;
       mf_set_flags(rw, fl);
       return -1;
@@ -288,8 +309,9 @@ int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
     /* 修复 I-1(Task 6 评审):state_blob_append 内部可能 mremap(MREMAP_MAYMOVE)
        移动该 pack 映射,append 前缓存的 rw 在 append 后悬垂(评审已用相邻 VMA
        探针实证 SIGSEGV)。append 之后必须重取记录指针,并同步刷新 fn->rec 与
-       fn->pack,供后续 mf_module_id(fn->rec) 与最终 set_flags(COLD) 使用。 */
-    rw = (mosaic_function_record *)find_function_ex(rt, fn->fn_id, &pack);
+       fn->pack,供后续 mf_module_id(fn->rec) 与最终 set_flags(COLD) 使用。
+       M2-2b:重取走活跃代解析(与入口一致)。 */
+    rw = (mosaic_function_record *)find_function_active(rt, fn->fn_id, &pack);
     fn->rec = rw;
     fn->pack = (u32)pack;
     mf_set_state_off(rw, off);
