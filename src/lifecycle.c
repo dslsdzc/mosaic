@@ -20,6 +20,9 @@ const mosaic_module_abi *mod_load(mosaic_runtime *rt, u64 module_id) {
   const char *e = dlerror();
   if (e) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
   const mosaic_module_abi *abi = sym();
+  /* dlsym 返回 NULL 且 dlerror()==NULL(符号存在但函数返回 NULL)时,上面的
+     e 检查不会命中,此防护补这个洞:abi 为 NULL 时不得解引用 */
+  if (!abi) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
   if (abi->abi_version != MOSAIC_MODULE_ABI_VERSION) { dlclose(so); rt->last_err = MOSAIC_ERR_ABI; return NULL; }
   /* 偏差 D-5 + 修正 D-10-1:计划原文用 == 校验,Task 6 改 <(导出槽位数少于声明
      函数数 → 必有一函数越界 → 拒绝)。但代码表是 code_off 槽位表,Task 10 合成

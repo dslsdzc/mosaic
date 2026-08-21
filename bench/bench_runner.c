@@ -78,26 +78,37 @@ int main(int argc, char **argv) {
   t0 = mosaic_bench_now_us();
   mosaic_event_dispatch(rs, ev_solo, NULL);      /* 物化 + 执行 */
   mosaic_evict_idle(rs, &zcfg);                  /* 墓碑 */
-  mosaic_event_dispatch(rs, ev_solo, NULL);      /* 恢复 + 执行 */
+  if (mosaic_event_dispatch(rs, ev_solo, NULL) != 1) { gate("S3", 0, "restore dispatch executed != 1"); return 1; }
   double t_cycle_us = mosaic_bench_now_us() - t0;
   snprintf(detail, sizeof detail, "full cycle %.1f us, limit %.0f us", t_cycle_us, GATE_S3_CYCLE_US);
   gate("S3", t_cycle_us <= GATE_S3_CYCLE_US, detail);
 
-  /* ---- S4:热路径 vs 直调 ---- */
+  /* ---- S4:热路径 vs 直调(对称循环体 + 预热 + 中位数) ---- */
   mosaic_fn_obj *fn = mosaic_fn_materialize(rs, 42ull << 32);
   if (!fn) { gate("S4", 0, "materialize failed"); return 1; }
-  const int ITERS = 5000000;
+  const int ITERS = 2000000;
+  const int SAMPLES = 7;
   volatile u32 sink = 0;
-  t0 = mosaic_bench_now_us();
-  for (int i = 0; i < ITERS; i++) mosaic_fn_execute(fn, ev_solo, NULL);
-  double t_exec = mosaic_bench_now_us() - t0;
-  t0 = mosaic_bench_now_us();
-  for (int i = 0; i < ITERS; i++) { fn->code(fn->state, ev_solo, NULL); sink += (u32)i; }
-  double t_direct = mosaic_bench_now_us() - t0;
-  (void)sink;
-  double ratio = t_exec / t_direct;
-  snprintf(detail, sizeof detail, "execute %.1f ns/call, direct %.1f ns/call, ratio %.3f, limit %.2f",
-           t_exec * 1000.0 / ITERS, t_direct * 1000.0 / ITERS, ratio, GATE_S4_RATIO);
+  /* 预热(同时建立两循环的指令缓存/分支预测状态) */
+  for (int i = 0; i < 100000; i++) { mosaic_fn_execute(fn, ev_solo, NULL); fn->code(fn->state, ev_solo, NULL); }
+  double ratios[SAMPLES];
+  for (int s = 0; s < SAMPLES; s++) {
+    t0 = mosaic_bench_now_us();
+    for (int i = 0; i < ITERS; i++) { mosaic_fn_execute(fn, ev_solo, NULL); sink += (u32)i; }
+    double t_exec = mosaic_bench_now_us() - t0;
+    t0 = mosaic_bench_now_us();
+    for (int i = 0; i < ITERS; i++) { fn->code(fn->state, ev_solo, NULL); sink += (u32)i; }
+    double t_direct = mosaic_bench_now_us() - t0;
+    ratios[s] = t_exec / t_direct;
+    (void)sink;
+  }
+  /* 中位数(排序后取中间) */
+  for (int i = 0; i < SAMPLES - 1; i++)
+    for (int j = i + 1; j < SAMPLES; j++)
+      if (ratios[j] < ratios[i]) { double t = ratios[i]; ratios[i] = ratios[j]; ratios[j] = t; }
+  double ratio = ratios[SAMPLES / 2];
+  snprintf(detail, sizeof detail, "median ratio %.3f (samples %.3f..%.3f), limit %.2f",
+           ratio, ratios[0], ratios[SAMPLES - 1], GATE_S4_RATIO);
   gate("S4", ratio <= GATE_S4_RATIO, detail);
   mosaic_runtime_close(rs);
 
