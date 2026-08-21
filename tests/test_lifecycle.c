@@ -112,6 +112,87 @@ static void test_materialize_while_not_cold_rejected(void) {
   mosaic_runtime_close(rt);
 }
 
+static void test_tombstone_illegal_transitions(void) {
+  const u64 MID = 400;
+  char err[256];
+  /* 偏差 B-7-1:简报用 build_pack 会给 pack 内所有函数打上 TOMBSTONE_ABLE,
+     "不可墓碑 → ILLEGAL"分支永远走不到(对正确实现而言 tombstone(f1) 会成功);
+     改为显式 builder:fn0 带 TOMBSTONE_ABLE,fn1 不带。 */
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_lc4.pack", 1, 2, 0, 0, 0);
+  mosaic_pack_builder_add_module(b, MID, 1, "mod", SO_PATH);
+  mosaic_pack_builder_add_fn(b, MID, 0, 0 /* code_inc */, 64, 1, 0,
+                             MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE);
+  mosaic_pack_builder_add_fn(b, MID, 1, 1 /* code_add */, 64, 1, 0,
+                             MOSAIC_FN_REQUIRES_STATE);   /* 无 TOMBSTONE_ABLE */
+  if (mosaic_pack_builder_finish(b, err, sizeof err) != 0) { fprintf(stderr, "build: %s\n", err); }
+  mosaic_pack_builder_free(b);
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_lc4.pack", err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  mosaic_fn_obj *fn = mosaic_fn_materialize(rt, MID << 32);
+  MT_CHECK(fn != NULL);
+  /* 墓碑两次:第二次非法(未 ACTIVE → COLD) */
+  MT_CHECK(mosaic_fn_tombstone(rt, fn) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, fn) == -1);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_ILLEGAL);
+  /* 从未物化的函数不能墓碑
+     偏差 B-7-2:简报此处仅有错误码断言、缺触发调用;tombstone 以 fn 对象寻址,
+     "从未物化"只能以 NULL 对象表达 → 补上 NULL 调用。 */
+  MT_CHECK(mosaic_fn_tombstone(rt, NULL) == -1);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_ILLEGAL);
+  /* 不可墓碑的函数(flags 无 TOMBSTONE_ABLE)→ ILLEGAL,且状态不被半途修改 */
+  mosaic_fn_obj *f1 = mosaic_fn_materialize(rt, (MID << 32) | 1);
+  MT_CHECK(f1 != NULL);
+  MT_CHECK(mosaic_fn_tombstone(rt, f1) == -1);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_ILLEGAL);
+  MT_CHECK_EQ_U64(mf_flags(f1->rec) & MOSAIC_FN_STATE_MASK, MOSAIC_FN_STATE_ACTIVE);
+  mosaic_runtime_close(rt);
+}
+
+static void test_no_state_function(void) {
+  const u64 MID = 500;
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_lc5.pack", 1, 1, 0, 0, 0);
+  mosaic_pack_builder_add_module(b, MID, 1, "mod", SO_PATH);
+  mosaic_pack_builder_add_fn(b, MID, 0, 2 /* noop */, 0 /* 无 state */, 1, 0,
+                             MOSAIC_FN_TOMBSTONE_ABLE);
+  if (mosaic_pack_builder_finish(b, err, sizeof err) != 0) { fprintf(stderr, "build: %s\n", err); }
+  mosaic_pack_builder_free(b);
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_lc5.pack", err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  mosaic_fn_obj *fn = mosaic_fn_materialize(rt, MID << 32);
+  MT_CHECK(fn != NULL);
+  MT_CHECK(fn->state == NULL);
+  mosaic_fn_execute(fn, 0, NULL);   /* 无 state 也安全 */
+  MT_CHECK(mosaic_fn_tombstone(rt, fn) == 0);   /* 无 state 也可墓碑 */
+  MT_CHECK_EQ_U64(mf_flags(mosaic_runtime_find_function(rt, MID << 32)) & MOSAIC_FN_STATE_MASK,
+                  MOSAIC_FN_STATE_COLD);
+  mosaic_runtime_close(rt);
+}
+
+static void test_code_off_oob_rejected(void) {
+  /* M-3(Task 6 评审,顺手):code_off >= abi->fn_count 的 pack
+     (test_mod.so 仅 3 槽,声明 code_off=5)→ materialize 返回 NULL 且 ABI 错误,flags 回滚 COLD */
+  const u64 MID = 600;
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_lc6.pack", 1, 1, 0, 0, 0);
+  mosaic_pack_builder_add_module(b, MID, 1, "mod", SO_PATH);
+  mosaic_pack_builder_add_fn(b, MID, 0, 5 /* 越界 */, 64, 1, 0,
+                             MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE);
+  if (mosaic_pack_builder_finish(b, err, sizeof err) != 0) { fprintf(stderr, "build: %s\n", err); }
+  mosaic_pack_builder_free(b);
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_lc6.pack", err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  MT_CHECK(mosaic_fn_materialize(rt, MID << 32) == NULL);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_ABI);
+  /* 失败后 flags 回滚为 COLD,可再次尝试 */
+  const mosaic_function_record *rec = mosaic_runtime_find_function(rt, MID << 32);
+  MT_CHECK_EQ_U64(mf_flags(rec) & MOSAIC_FN_STATE_MASK, MOSAIC_FN_STATE_COLD);
+  mosaic_runtime_close(rt);
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) { fprintf(stderr, "usage: %s <test_mod.so> <test_badmod.so>\n", argv[0]); return 2; }
   SO_PATH = argv[1]; BAD_SO_PATH = argv[2];
@@ -119,5 +200,8 @@ int main(int argc, char **argv) {
   MT_RUN(test_tombstone_restore_preserves_state);
   MT_RUN(test_bad_abi_rejected);
   MT_RUN(test_materialize_while_not_cold_rejected);
+  MT_RUN(test_tombstone_illegal_transitions);
+  MT_RUN(test_no_state_function);
+  MT_RUN(test_code_off_oob_rejected);
   return MT_RESULT() ? 0 : 1;
 }

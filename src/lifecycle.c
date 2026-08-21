@@ -153,15 +153,26 @@ int mosaic_fn_tombstone(mosaic_runtime *rt, mosaic_fn_obj *fn) {
   if (fn->state && (fl & MOSAIC_FN_REQUIRES_STATE) && fn->state_size) {
     u32 off = 0;
     if (state_blob_append(rt, fn->state, fn->state_size, &off) != 0) {
-      mf_set_flags(rw, fl);   /* 回滚为 ACTIVE */
+      /* 回滚为 ACTIVE;失败路径 mremap 未发生,但统一重取指针杜绝任何悬垂写 */
+      rw = (mosaic_function_record *)mosaic_runtime_find_function(rt, fn->fn_id);
+      mf_set_flags(rw, fl);
       return -1;
     }
+    /* 修复 I-1(Task 6 评审):state_blob_append 内部可能 mremap(MREMAP_MAYMOVE)
+       移动整个 pack 映射,append 前缓存的 rw 在 append 后悬垂(评审已用相邻 VMA
+       探针实证 SIGSEGV)。append 之后必须重取记录指针,并同步刷新 fn->rec,
+       供后续 mf_module_id(fn->rec) 与最终 set_flags(COLD) 使用。 */
+    rw = (mosaic_function_record *)mosaic_runtime_find_function(rt, fn->fn_id);
+    fn->rec = rw;
     mf_set_state_off(rw, off);
   }
+  /* 修复 M-1(Task 6 评审):fn_free 之后读 fn->rec 是逻辑 UAF(当前仅因结构体
+     字段布局侥幸安全);module_id 必须在 fn_free 之前取出。 */
+  u32 module_id = mf_module_id(fn->rec);
   ws_remove(rt, fn);
   free(fn->state);
   fn_free(rt, fn);
-  mod_unload(rt, mf_module_id(fn->rec));
+  mod_unload(rt, module_id);
   mf_set_flags(rw, (u16)((fl & ~MOSAIC_FN_STATE_MASK) | MOSAIC_FN_STATE_COLD));
   return 0;
 }
