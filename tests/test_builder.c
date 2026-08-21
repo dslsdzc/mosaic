@@ -79,7 +79,77 @@ static void test_built_pack(void) {
   MT_CHECK_EQ_U64(mt_fn_id(&trigs[1]), 10ull << 32 | 1);
   MT_CHECK_EQ_U64(mt_fn_id(&trigs[2]), 20ull << 32 | 0);
 
+  /* 事件名逐项落盘:两项均写入(len>0;meta 首个字符串偏移可为 0,故不按 off!=0 判断),
+     偏移互异,且 meta blob 中对应偏移的字符串与名字一致 */
+  fseek(f, (long)hdr_event_names_off(hdr), SEEK_SET);
+  mosaic_event_name evs[2];
+  MT_CHECK(fread(evs, 1, sizeof evs, f) == sizeof evs);
+  MT_CHECK(mn_len(&evs[0]) != 0);
+  MT_CHECK(mn_len(&evs[1]) != 0);
+  MT_CHECK(mn_off(&evs[0]) != mn_off(&evs[1]));
+  MT_CHECK_EQ_U64(mn_len(&evs[0]), (u64)strlen("player_join"));
+  MT_CHECK_EQ_U64(mn_len(&evs[1]), (u64)strlen("block_break"));
+
+  fseek(f, (long)hdr_meta_off(hdr), SEEK_SET);
+  u8 meta[1024];
+  MT_CHECK(fread(meta, 1, (size_t)hdr_meta_len(hdr), f) == hdr_meta_len(hdr));
+  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[0]), "player_join") == 0);
+  MT_CHECK(strcmp((const char *)meta + mn_off(&evs[1]), "block_break") == 0);
+
   fclose(f);
+}
+
+static void test_multi_owner_deps(void) {
+  char err[256];
+  const char *p = "/tmp/mosaic_test_deps.pack";
+  mosaic_pack_builder *b = mosaic_pack_builder_create(p, 2, 0, 0, 2, 0);
+  if (!b) { MT_CHECK(0); return; }
+  mosaic_pack_builder_add_module(b, 10, 1, "mod_a", "/tmp/a.so");
+  mosaic_pack_builder_add_module(b, 20, 2, "mod_b", "/tmp/b.so");
+  mosaic_pack_builder_add_dep(b, 10, 5);
+  mosaic_pack_builder_add_dep(b, 20, 6);
+  MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) == 0);
+  mosaic_pack_builder_free(b);
+
+  FILE *f = fopen(p, "rb");
+  MT_CHECK(f != NULL);
+  u8 hdr[HDR_SIZE]; MT_CHECK(fread(hdr, 1, HDR_SIZE, f) == HDR_SIZE);
+  fseek(f, (long)hdr_module_off(hdr), SEEK_SET);
+  mosaic_module_record mods[2];
+  MT_CHECK(fread(mods, 1, sizeof mods, f) == sizeof mods);
+  MT_CHECK_EQ_U64(mm_id(&mods[0]), 10);
+  MT_CHECK_EQ_U64(mm_id(&mods[1]), 20);
+  /* 两个 owner 都必须拿到 dep_off,且指向各自依赖条目的下标 */
+  MT_CHECK(mm_dep_off(&mods[0]) != MOSAIC_DEP_NONE);
+  MT_CHECK(mm_dep_off(&mods[1]) != MOSAIC_DEP_NONE);
+  MT_CHECK_EQ_U64(mm_dep_off(&mods[0]), 0);
+  MT_CHECK_EQ_U64(mm_dep_off(&mods[1]), 1);
+
+  fseek(f, (long)hdr_dep_off(hdr), SEEK_SET);
+  mosaic_dep_entry deps[2];
+  MT_CHECK(fread(deps, 1, sizeof deps, f) == sizeof deps);
+  MT_CHECK_EQ_U64(md_owner_id(&deps[0]), 10); MT_CHECK_EQ_U64(md_dep_id(&deps[0]), 5);
+  MT_CHECK_EQ_U64(md_owner_id(&deps[1]), 20); MT_CHECK_EQ_U64(md_dep_id(&deps[1]), 6);
+  fclose(f);
+}
+
+static void test_duplicate_module_rejected(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_dupm.pack", 2, 0, 0, 0, 0);
+  mosaic_pack_builder_add_module(b, 10, 1, "a", "/tmp/a.so");
+  mosaic_pack_builder_add_module(b, 10, 2, "b", "/tmp/b.so");  /* 重复 id */
+  MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) != 0);
+  MT_CHECK(strstr(err, "duplicate module id") != NULL);
+  mosaic_pack_builder_free(b);
+}
+
+static void test_too_many_events_rejected(void) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_ev65.pack", 1, 0, 0, 0, 65);
+  mosaic_pack_builder_add_module(b, 10, 1, "a", "/tmp/a.so");
+  MT_CHECK(mosaic_pack_builder_finish(b, err, sizeof err) != 0);
+  MT_CHECK(strstr(err, "too many events") != NULL);
+  mosaic_pack_builder_free(b);
 }
 
 static void test_duplicate_fn_rejected(void) {
@@ -96,5 +166,8 @@ static void test_duplicate_fn_rejected(void) {
 int main(void) {
   MT_RUN(test_built_pack);
   MT_RUN(test_duplicate_fn_rejected);
+  MT_RUN(test_multi_owner_deps);
+  MT_RUN(test_duplicate_module_rejected);
+  MT_RUN(test_too_many_events_rejected);
   return MT_RESULT() ? 0 : 1;
 }

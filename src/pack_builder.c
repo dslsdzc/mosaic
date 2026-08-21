@@ -10,6 +10,7 @@ struct mosaic_pack_builder {
   u64 module_count, fn_count, trigger_count, dep_count;
   u32 event_count;
   u64 mod_cursor, fn_cursor, trig_cursor, dep_cursor;
+  u32 event_cursor;
   mosaic_module_record *mods;
   mosaic_function_record *fns;
   mosaic_trigger_entry *triggers;
@@ -59,9 +60,10 @@ mosaic_pack_builder *mosaic_pack_builder_create(const char *path, u64 module_cou
 
 void mosaic_pack_builder_add_event(mosaic_pack_builder *b, const char *name) {
   if (!b || b->failed) return;
+  if (b->event_cursor >= b->event_count) { b->failed = 1; return; }
   char *p = meta_add(b, name);
   if (!p) return;
-  mn_set(&b->event_names[b->event_count - 1], (u32)(p - b->meta), (u32)strlen(name));
+  mn_set(&b->event_names[b->event_cursor++], (u32)(p - b->meta), (u32)strlen(name));
 }
 
 void mosaic_pack_builder_add_module(mosaic_pack_builder *b, u64 module_id, u32 version,
@@ -72,9 +74,12 @@ void mosaic_pack_builder_add_module(mosaic_pack_builder *b, u64 module_id, u32 v
   mm_set_id(m, module_id);
   mm_set_version(m, version);
   mm_set_generation(m, 1);
-  char *n = meta_add(b, name), *so = meta_add(b, so_path);
-  if (!n || !so) return;
-  mm_set_name_off(m, (u32)(n - b->meta));
+  char *n = meta_add(b, name);
+  if (!n) return;
+  u32 noff = (u32)(n - b->meta);   /* 第二次 meta_add 可能 realloc 移动缓冲,先取偏移 */
+  char *so = meta_add(b, so_path);
+  if (!so) return;
+  mm_set_name_off(m, noff);
   mm_set_so_off(m, (u32)(so - b->meta));
   mm_set_dep_off(m, MOSAIC_DEP_NONE);
 }
@@ -174,11 +179,14 @@ int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errl
       mm_set_fn_count(&b->mods[mi], (u32)(fi - start));
     }
   }
-  /* 修正 dep_off:遍历已排序依赖表 */
+  /* 修正 dep_off:遍历已排序依赖表,按 owner 分组推进 di */
   u64 di = 0;
   for (u64 mi = 0; mi < b->module_count && di < b->dep_count; mi++) {
     u64 mid = mm_id(&b->mods[mi]);
-    if (md_owner_id(&b->deps[di]) == mid) mm_set_dep_off(&b->mods[mi], (u32)di);
+    if (md_owner_id(&b->deps[di]) == mid) {
+      mm_set_dep_off(&b->mods[mi], (u32)di);
+      while (di < b->dep_count && md_owner_id(&b->deps[di]) == mid) di++;
+    }
   }
 
   u64 off_mods = HDR_SIZE;
