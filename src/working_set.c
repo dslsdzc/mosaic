@@ -59,6 +59,15 @@ void arena_zalloc(mosaic_runtime *rt, size_t n, void **out) {
   *out = p;
 }
 
+/* 哈希键混合:fn_id 编码为 (module<<32)|local,低 32 位几乎恒定(module 从
+   bit 32 起),直接 `fn_id & mask` 会把全部条目散列到 ~10 个槽 → 簇内链线性
+   增长,查找退化 O(len)(实测:1e6 宇宙派发 1109.7s,399418 次执行 2.78ms/
+   次,量级与簇长吻合;mods 链表 O(n²) 修复后此退化为剩余主导项)。乘大奇数
+   (Fibonacci 散列)+ 异或高半打破位模式。 */
+static inline u64 ws_hash_key(u64 fn_id) {
+  return (fn_id >> 32) ^ (fn_id * 0x9E3779B97F4A7C15ull);
+}
+
 static int ws_grow(mosaic_runtime *rt) {
   u64 cap = rt->ws.cap ? rt->ws.cap * 2 : 16;
   u64 *keys = calloc(cap, sizeof *keys);
@@ -67,7 +76,7 @@ static int ws_grow(mosaic_runtime *rt) {
   for (u64 i = 0; i < rt->ws.cap; i++) {
     u64 k = rt->ws.keys[i];
     if (!k) continue;
-    u64 h = k & (cap - 1);
+    u64 h = ws_hash_key(k) & (cap - 1);
     while (keys[h]) h = (h + 1) & (cap - 1);
     keys[h] = k; vals[h] = rt->ws.vals[i];
   }
@@ -78,7 +87,7 @@ static int ws_grow(mosaic_runtime *rt) {
 
 struct mosaic_fn_obj *ws_find(mosaic_runtime *rt, u64 fn_id) {
   if (!rt->ws.cap) return NULL;
-  u64 h = fn_id & (rt->ws.cap - 1);
+  u64 h = ws_hash_key(fn_id) & (rt->ws.cap - 1);
   for (u64 i = 0; i < rt->ws.cap; i++) {
     u64 k = rt->ws.keys[h];
     if (!k) return NULL;
@@ -93,7 +102,7 @@ void ws_insert(mosaic_runtime *rt, struct mosaic_fn_obj *fn) {
   if (rt->ws.len * 10 >= rt->ws.cap * 7) {
     if (ws_grow(rt) != 0) return;   /* OOM:ws_grow 已设 last_err,跳过插入 */
   }
-  u64 h = fn->fn_id & (rt->ws.cap - 1);
+  u64 h = ws_hash_key(fn->fn_id) & (rt->ws.cap - 1);
   while (rt->ws.keys[h]) h = (h + 1) & (rt->ws.cap - 1);
   rt->ws.keys[h] = fn->fn_id; rt->ws.vals[h] = fn;
   rt->ws.len++;
@@ -113,7 +122,7 @@ static int in_fwd_interval(u64 ideal, u64 h, u64 j, u64 mask) {
 
 void ws_remove(mosaic_runtime *rt, struct mosaic_fn_obj *fn) {
   if (rt->ws.cap) {
-    u64 h = fn->fn_id & (rt->ws.cap - 1);
+    u64 h = ws_hash_key(fn->fn_id) & (rt->ws.cap - 1);
     u64 found = rt->ws.cap;   /* 记录命中槽,cap 表示未命中 */
     for (u64 i = 0; i < rt->ws.cap; i++) {
       if (rt->ws.keys[h] == fn->fn_id) { found = h; break; }
@@ -128,7 +137,7 @@ void ws_remove(mosaic_runtime *rt, struct mosaic_fn_obj *fn) {
       u64 mask = rt->ws.cap - 1;
       u64 j = (found + 1) & mask;
       while (rt->ws.keys[j]) {
-        u64 ideal = rt->ws.keys[j] & mask;
+        u64 ideal = ws_hash_key(rt->ws.keys[j]) & mask;
         if (!in_fwd_interval(ideal, found, j, mask)) {
           rt->ws.keys[found] = rt->ws.keys[j];
           rt->ws.vals[found] = rt->ws.vals[j];
