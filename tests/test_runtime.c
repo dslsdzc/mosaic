@@ -31,6 +31,20 @@ static void test_open_good_pack(void) {
   }
 }
 
+static void test_event_prefix_rejected(void) {
+  /* 最终评审必修:event_id 解析必须要求 name 整串相等,前缀/子串不得误匹配 */
+  MT_CHECK(build_mini("/tmp/mosaic_test_good.pack") == 0);
+  char err[256];
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_good.pack", err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (rt) {
+    MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "tick"), 0);        /* 精确名仍命中 */
+    MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "player_joinx"), MOSAIC_U32_NONE); /* 前缀误匹配必须拒绝 */
+    MT_CHECK_EQ_U64(mosaic_runtime_event_id(rt, "player_joi"), MOSAIC_U32_NONE);   /* 截断子串拒绝 */
+    mosaic_runtime_close(rt);
+  }
+}
+
 static void test_open_bad_magic(void) {
   FILE *f = fopen("/tmp/mosaic_test_badmagic.pack", "wb");
   u8 hdr[HDR_SIZE]; memset(hdr, 0, sizeof hdr);
@@ -115,6 +129,7 @@ static void test_open_count_overflow(void) {
 
 int main(void) {
   MT_RUN(test_open_good_pack);
+  MT_RUN(test_event_prefix_rejected);
   MT_RUN(test_open_bad_magic);
   MT_RUN(test_open_bad_version);
   MT_RUN(test_open_bad_offset);

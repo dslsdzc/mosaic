@@ -88,8 +88,9 @@ u32 mosaic_runtime_event_id(const mosaic_runtime *rt, const char *name) {
     const mosaic_event_name *en = (const mosaic_event_name *)(rt->map + eoff + (u64)i * MN_SIZE);
     u32 o = mn_off(en), l = mn_len(en);
     const char *p = (const char *)(rt->map + base + o);
-    /* strcmp 会越过 NUL 窗口读到 map 外;改 strncmp 限定窗口内比较,并确认窗口尾为 NUL */
-    if (base + o + l + 1 <= rt->map_len && strncmp(name, p, l) == 0 && p[l] == '\0')
+    /* strcmp 会越过 NUL 窗口读到 map 外;改 strncmp 限定窗口内比较,并同时确认
+       name 与注册名窗口尾均为 NUL——否则 "player_joinx" 会误匹配 "player_join" */
+    if (base + o + l + 1 <= rt->map_len && strncmp(name, p, l) == 0 && name[l] == '\0' && p[l] == '\0')
       return i;
   }
   return MOSAIC_U32_NONE;

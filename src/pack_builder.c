@@ -150,12 +150,13 @@ static int check_dupes(const mosaic_function_record *fns, u64 n, char *err, size
 
 int mosaic_pack_builder_finish(mosaic_pack_builder *b, char *errbuf, size_t errlen) {
   if (!b) { builder_err(errbuf, errlen, "null builder"); return -1; }
+  if (b->event_count > 64) { builder_err(errbuf, errlen, "too many events (>64)"); return -1; }
   if (b->failed || b->mod_cursor != b->module_count || b->fn_cursor != b->fn_count ||
-      b->trig_cursor != b->trigger_count || b->dep_cursor != b->dep_count) {
+      b->trig_cursor != b->trigger_count || b->dep_cursor != b->dep_count ||
+      b->event_cursor != b->event_count) {
     builder_err(errbuf, errlen, "record count mismatch (fill before finish)");
     return -1;
   }
-  if (b->event_count > 64) { builder_err(errbuf, errlen, "too many events (>64)"); return -1; }
 
   qsort(b->mods, (size_t)b->module_count, sizeof *b->mods, cmp_mod);
   qsort(b->fns, (size_t)b->fn_count, sizeof *b->fns, cmp_fn);
