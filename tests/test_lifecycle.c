@@ -173,12 +173,13 @@ static void test_no_state_function(void) {
 
 static void test_code_off_oob_rejected(void) {
   /* M-3(Task 6 评审,顺手):code_off >= abi->fn_count 的 pack
-     (test_mod.so 仅 3 槽,声明 code_off=5)→ materialize 返回 NULL 且 ABI 错误,flags 回滚 COLD */
+     (test_mod.so 6 槽 0..5,声明 code_off=6 越界;M3-2 把槽数 5→6 后越界
+     边界同步移动)→ materialize 返回 NULL 且 ABI 错误,flags 回滚 COLD */
   const u64 MID = 600;
   char err[256];
   mosaic_pack_builder *b = mosaic_pack_builder_create("/tmp/mosaic_test_lc6.pack", 1, 1, 0, 0, 0);
   mosaic_pack_builder_add_module(b, MID, 1, "mod", SO_PATH);
-  mosaic_pack_builder_add_fn(b, MID, 0, 5 /* 越界 */, 64, 1, 0,
+  mosaic_pack_builder_add_fn(b, MID, 0, 6 /* 越界 */, 64, 1, 0,
                              MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE);
   if (mosaic_pack_builder_finish(b, err, sizeof err) != 0) { fprintf(stderr, "build: %s\n", err); }
   mosaic_pack_builder_free(b);

@@ -24,6 +24,7 @@ add_library(mosaic_core STATIC
   src/tx.c
   src/sched.c
   src/events.c
+  src/world.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # M2-3:sched.c 仅 libc + pthread(静态库的 PRIVATE 链接依赖会传导到最终链接行)
@@ -140,3 +141,9 @@ add_test(NAME test_descriptor COMMAND test_descriptor)
 add_executable(test_events tests/test_events.c)
 target_link_libraries(test_events mosaic_core)
 add_test(NAME test_events COMMAND test_events $<TARGET_FILE:test_mod>)
+
+# M3-2:合成世界模拟器(世界 API + 频率档生成器 + 确定性;动作→事件派发/
+# 生成器/载荷探针集成用例需要 test_mod.so fixture + code_off 5 探针)
+add_executable(test_world tests/test_world.c)
+target_link_libraries(test_world mosaic_core)
+add_test(NAME test_world COMMAND test_world $<TARGET_FILE:test_mod>)
