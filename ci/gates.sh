@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 前置条件:需要 JDK(CMake FindJNI,见 README);无 JDK 环境请跳过或先安装。
 # Mosaic M1 验收门禁:Release 构建 + 单元/属性测试 + 10M 基准硬指标
 # 任何一步失败 → 非零退出(回归即失败)
 set -euo pipefail

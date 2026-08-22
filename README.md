@@ -45,7 +45,7 @@ ci/gates.sh      验收门禁
 `functionCount`、`eventId`(名 → id,未注册 -1)、`eventDispatch`
 (byte[] 载荷 → 执行数)、`workingSetCount`、`lastError`。载荷约定:
 `byte[]` 与 `include/mosaic/events.h` 载荷结构体**小端一致**,长度 =
-结构体大小(例:方块事件 16B = player_id/x/y/z/block_type;玩家事件 4B)。
+结构体大小(例:方块事件 20B = player_id/x/y/z/block_type;玩家事件 4B)。
 
 构建与运行 JNI 测试(需要 JDK 21;JAVA_HOME 未设时用 `/usr/lib/jvm/default`):
 

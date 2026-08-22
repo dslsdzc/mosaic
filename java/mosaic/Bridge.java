@@ -10,7 +10,8 @@ package mosaic;
  * 载荷约定:eventDispatch 的 payload byte[] 与 C 侧事件载荷结构体
  * (include/mosaic/events.h)字节序一致(小端,LE),payload 长度 == 对应
  * 结构体大小。例:方块事件(block_break/block_place/block_interact/
- * block_tick)= 16B:u32 player_id, u32 x, u32 y, u32 z, u32 block_type
+ * block_tick)= 20B(player_id/x/y/z/block_type):u32 player_id, u32 x,
+ * u32 y, u32 z, u32 block_type
  * (5 × 4B,LE);玩家事件(player_join/player_leave/player_death/...)=
  * 4B:u32 player_id。
  */
