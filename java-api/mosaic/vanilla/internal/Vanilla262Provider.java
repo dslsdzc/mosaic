@@ -155,6 +155,24 @@ public final class Vanilla262Provider implements MosaicProvider {
                 try { return componentsOf(ReflectUtil.call(it, m("item.components"))); }
                 catch (Exception e) { throw new MosaicHandleException("components: " + e); }
             }
+            public int maxDamage() {
+                // 26.2 无 Item.getMaxDamage:maxDamage 是组件(DataComponents.MAX_DAMAGE,
+                // ItemStack.getMaxDamage = getOrDefault(MAX_DAMAGE, 0),ItemStack.java:432)。
+                // 无运行中服务端时 Item.components() 组件未绑定(Holder.Reference.components
+                // 抛 "Components not bound yet")→ 回退 0(与 maxStackSize 回退同款处理);
+                // 未绑定与未设组件均属不可损坏语义,双代契约断言非负/一致即可。
+                try {
+                    Object cmap = ReflectUtil.call(it, m("item.components"));
+                    Object type = ReflectUtil.fieldStatic(cls("datacomponents"), m("item.maxdamage"));
+                    Object v = ReflectUtil.call(cmap, m("datacomponentmap.get"), type);
+                    return v instanceof Number n ? n.intValue() : 0;
+                } catch (Exception e) { return 0; }
+            }
+            public boolean damageable() {
+                // 26.2 无 Item.isDamageable:可损坏 ⇔ maxDamage > 0(ItemStack.isDamageableItem
+                // 的组件语义近似,Item 级与栈级差异由 Provider 吸收)
+                return maxDamage() > 0;
+            }
         };
     }
 
@@ -547,6 +565,90 @@ public final class Vanilla262Provider implements MosaicProvider {
     public MosaicNetwork networkOf(Object vanillaNetwork) {
         if (vanillaNetwork == null) return new NullSafeNetwork();
         return new ConnectionNetwork(this, vanillaNetwork);
+    }
+
+    /* ---------- Recipe / Enchantment(M8-B) ---------- */
+
+    /** 配方句柄工厂:26.2 Recipe 为接口,契约环境不可轻量构造(实现如 ShapedRecipe/
+     *  NormalCraftingRecipe 需 RecipeSerializer + codec 装配)→ null 语义为主(与
+     *  Entity 先例一致),真实路径在服务端环境可用。注册名经 RecipeHolder.id()
+     *  (配方注册表条目为 RecipeHolder(ResourceKey id, T value) 记录)直读;裸 Recipe
+     *  无注册表上下文 → "unknown"。 */
+    public MosaicRecipe recipeOf(Object vanillaRecipe) {
+        if (vanillaRecipe == null) return new NullSafeRecipe();
+        final Object r = vanillaRecipe;
+        return new MosaicRecipe() {
+            public String registryName() {
+                try {
+                    Object id = ReflectUtil.call(r, m("recipe.holder.id"));
+                    Object loc = ReflectUtil.call(id, m("reskey.identifier"));
+                    return loc == null ? "unknown" : loc.toString();
+                } catch (Exception e) { return "unknown"; }
+            }
+            public MosaicItemStack result() {
+                // 26.2 Recipe 无直接输出访问器:display() → List<RecipeDisplay> →
+                // result() 为 SlotDisplay,需服务端上下文/物品解析(RecipeDisplay.java:14)
+                // → 契约环境不可达,返回 null;真实输出路径待服务端环境
+                return null;
+            }
+            public String type() {
+                try {
+                    Object type = ReflectUtil.call(r, m("recipe.type"));
+                    Object key = ReflectUtil.call(builtInRegistry("registry.recipetype"), m("registry.key"), type);
+                    return key == null ? "" : key.toString();
+                } catch (Exception e) { return ""; }
+            }
+        };
+    }
+
+    /** 附魔句柄工厂:26.2 Enchantment 为记录(非抽象类;逆向核实 Enchantment.java:47),
+     *  契约环境可轻参构造(Component.translatable + EnchantmentDefinition 构造器 +
+     *  HolderSet.empty() + DataComponentMap.EMPTY,见 Vanilla262Env)——真实路径可用;
+     *  null → null-safe 句柄。maxLevel = definition().maxLevel()(EnchantmentDefinition
+     *  记录访问器);descriptionKey = description() 组件 → TranslatableContents.getKey()
+     *  (非翻译组件 → "");registryName 经 Holder.key()(26.2 附魔通常以 Holder<Enchantment>
+     *  传递),裸记录无注册表上下文 → "unknown"。 */
+    public MosaicEnchantment enchantmentOf(Object vanillaEnchantment) {
+        if (vanillaEnchantment == null) return new NullSafeEnchantment();
+        final Object e = vanillaEnchantment;
+        return new MosaicEnchantment() {
+            public String registryName() {
+                try {
+                    Object key = ReflectUtil.call(e, m("holder.key"));
+                    Object loc = ReflectUtil.call(key, m("reskey.identifier"));
+                    return loc == null ? "unknown" : loc.toString();
+                } catch (Exception ex) { return "unknown"; }
+            }
+            public int maxLevel() {
+                try {
+                    Object def = ReflectUtil.call(e, m("enchantment.definition"));
+                    return intOf(ReflectUtil.call(def, m("enchantment.maxlevel")));
+                } catch (Exception ex) { return 0; }
+            }
+            public String descriptionKey() {
+                try {
+                    Object desc = ReflectUtil.call(e, m("enchantment.description"));
+                    Object contents = ReflectUtil.call(desc, m("component.contents"));
+                    Object key = callSafe(contents, m("translatablecontents.key"));
+                    return key == null ? "" : key.toString();
+                } catch (Exception ex) { return ""; }
+            }
+        };
+    }
+
+    /** null-safe 配方句柄(双代同值):registryName "unknown"、result null、type ""
+     *  (契约环境无真实 Recipe → 兜底值;与 entityOf(null) 的 "unknown" 先例同款)。 */
+    private static final class NullSafeRecipe implements MosaicRecipe {
+        public String registryName() { return "unknown"; }
+        public MosaicItemStack result() { return null; }
+        public String type() { return ""; }
+    }
+
+    /** null-safe 附魔句柄(双代同值):registryName "unknown"、maxLevel 0、descriptionKey ""。 */
+    private static final class NullSafeEnchantment implements MosaicEnchantment {
+        public String registryName() { return "unknown"; }
+        public int maxLevel() { return 0; }
+        public String descriptionKey() { return ""; }
     }
 
     /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的

@@ -59,4 +59,14 @@ public class Vanilla189Env implements VanillaEnv {
         // ServerCommandManager 需 MinecraftServer 不可构造——契约只用 CommandHandler。
         return ReflectUtil.callConstructor("net.minecraft.command.CommandHandler");
     }
+    public Object enchantmentObject() throws Exception {
+        // 1.8.9 附魔:静态实例(Enchantment.sharpness = EnchantmentDamage(16,
+        // "sharpness", 10, 0),Enchantment.java:54)。类加载即注册入
+        // locationEnchantments 静态表(注册名逆查源);构造新实例需 (int id,
+        // ResourceLocation, int, EnumEnchantmentType) 且重复 id 抛
+        // IllegalArgumentException(Enchantment.java:100-110)——静态实例是
+        // 契约环境唯一的真实路径(任务预设 "(Rarity,int,int)" 为 1.6-1.7 形态,
+        // 1.8.9 逆向核实非该签名)。
+        return ReflectUtil.fieldStatic("net.minecraft.enchantment.Enchantment", "sharpness");
+    }
 }

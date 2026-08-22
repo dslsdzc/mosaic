@@ -25,4 +25,14 @@ public interface MosaicProvider {
     /** 网络域句柄工厂(26.2 PacketListener/Connection ↔ 1.8.9 NetHandler)。 */
     @Since(1)
     MosaicNetwork networkOf(Object vanillaNetwork);
+    /** 配方域句柄工厂(26.2 world.item.crafting.Recipe ↔ 1.8.9 item.crafting.IRecipe)。
+     *  契约环境 Recipe 为接口不可轻量构造 → null 语义为主(与 Entity 先例一致),
+     *  真实路径在服务端环境可用。 */
+    @Since(1)
+    MosaicRecipe recipeOf(Object vanillaRecipe);
+    /** 附魔域句柄工厂(26.2 world.item.enchantment.Enchantment(记录)↔ 1.8.9
+     *  enchantment.Enchantment)。26.2 契约环境可构造 Enchantment 记录(轻参)、
+     *  1.8.9 静态实例可用 → 双代真实路径 + null 语义。 */
+    @Since(1)
+    MosaicEnchantment enchantmentOf(Object vanillaEnchantment);
 }

@@ -151,6 +151,17 @@ public final class Vanilla189Provider implements MosaicProvider {
                 // 1.8.9 无组件系统:空实现(keys 空/get null/with 幂等返回自身)
                 return emptyComponents();
             }
+            public int maxDamage() {
+                // 1.8.9 Item.getMaxDamage() 直接返回 maxDamage 字段(默认 0,不可损坏)
+                try { return intOf(call(it, m("item.maxdamage"))); } catch (Exception e) { return 0; }
+            }
+            public boolean damageable() {
+                // 1.8.9 Item.isDamageable() = maxDamage > 0 && !hasSubtypes(Item.java:207)
+                try {
+                    Object r = call(it, m("item.isdamageable"));
+                    return r instanceof Boolean b && b;
+                } catch (Exception e) { return maxDamage() > 0; }
+            }
         };
     }
 
@@ -518,6 +529,84 @@ public final class Vanilla189Provider implements MosaicProvider {
         return new NetHandlerNetwork(this, vanillaNetwork);
     }
 
+    /* ---------- Recipe / Enchantment(M8-B) ---------- */
+
+    /** 配方句柄工厂:1.8.9 IRecipe 为接口,真实实例在 CraftingManager 配方表(类加载即
+     *  构造,CraftingManager.java:26-51)——但任务务实决策:Recipe null 语义为主 +
+     *  真实路径留服务端(与 Entity 先例一致;26.2 契约环境无配方注册表,双代不对称)。
+     *  注册名经类名合成(IRecipe 无注册表名概念):类简单名去 Recipe(s) 前缀 →
+     *  snake_case → "minecraft:<name>"(与 EntityType 类名合成同款思路);输出 =
+     *  getRecipeOutput();type() 无 RecipeType/RecipeCategory(1.14+ 概念)→ 统一
+     *  映射 "minecraft:crafting"(CraftingManager 即工作台配方注册表)。 */
+    public MosaicRecipe recipeOf(Object vanillaRecipe) {
+        if (vanillaRecipe == null) return new NullSafeRecipe();
+        final Object r = vanillaRecipe;
+        return new MosaicRecipe() {
+            public String registryName() {
+                String n = r == null ? "" : r.getClass().getSimpleName();
+                if (n.startsWith("Recipes")) n = n.substring(7);
+                else if (n.startsWith("Recipe")) n = n.substring(6);
+                return n.isEmpty() ? "unknown" : "minecraft:" + snakeCase(n);
+            }
+            public MosaicItemStack result() {
+                try {
+                    Object out = ReflectUtil.call(r, m("recipe.output"));
+                    return out == null ? null : itemStackOf(out);
+                } catch (Exception e) { return null; }
+            }
+            public String type() { return "minecraft:crafting"; }
+        };
+    }
+
+    /** 附魔句柄工厂:1.8.9 Enchantment 抽象类,构造需 (int id, ResourceLocation,
+     *  int weight, EnumEnchantmentType)(Enchantment.java:100-110,重复 id 抛
+     *  IllegalArgumentException;任务预设 "(Rarity,int,int)" 为 1.6-1.7 形态,
+     *  逆向核实 1.8.9 非该签名)——真实路径用静态实例(Enchantment.sharpness 等,
+     *  类加载即注册;见 Vanilla189Env);null → null-safe 句柄。registryName 经
+     *  private static locationEnchantments 逆查(Map<ResourceLocation,Enchantment>,
+     *  值身份匹配 → key.toString() = "minecraft:sharpness");maxLevel = getMaxLevel()
+     *  (EnchantmentDamage 为 5);descriptionKey = getName()("enchantment.damage.sharpness")。 */
+    public MosaicEnchantment enchantmentOf(Object vanillaEnchantment) {
+        if (vanillaEnchantment == null) return new NullSafeEnchantment();
+        final Object e = vanillaEnchantment;
+        return new MosaicEnchantment() {
+            public String registryName() {
+                try {
+                    Object map = ReflectUtil.fieldStatic(cls("enchantment"), m("enchantment.locationmap"));
+                    if (map instanceof Map<?, ?> m)
+                        for (Map.Entry<?, ?> en : m.entrySet())
+                            if (en.getValue() == e) return en.getKey().toString();
+                    return "unknown";
+                } catch (Exception ex) { return "unknown"; }
+            }
+            public int maxLevel() {
+                try { return intOf(call(e, m("enchantment.maxlevel"))); }
+                catch (Exception ex) { return 0; }
+            }
+            public String descriptionKey() {
+                try {
+                    Object key = callSafe(e, m("enchantment.name"));
+                    return key == null ? "" : key.toString();
+                } catch (Exception ex) { return ""; }
+            }
+        };
+    }
+
+    /** null-safe 配方句柄(双代同值):registryName "unknown"、result null、type ""
+     *  (契约环境无真实 Recipe → 兜底值;与 entityOf(null) 的 "unknown" 先例同款)。 */
+    private static final class NullSafeRecipe implements MosaicRecipe {
+        public String registryName() { return "unknown"; }
+        public MosaicItemStack result() { return null; }
+        public String type() { return ""; }
+    }
+
+    /** null-safe 附魔句柄(双代同值):registryName "unknown"、maxLevel 0、descriptionKey ""。 */
+    private static final class NullSafeEnchantment implements MosaicEnchantment {
+        public String registryName() { return "unknown"; }
+        public int maxLevel() { return 0; }
+        public String descriptionKey() { return ""; }
+    }
+
     /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的
      *  null-safe 先例同款)。句柄同时实现 MosaicCommandTree(规范 §5 Command 域双接口)。 */
     private static final class NullSafeCommand implements MosaicCommand, MosaicCommandTree {
@@ -626,6 +715,18 @@ public final class Vanilla189Provider implements MosaicProvider {
     private static String stripNamespace(String name) {
         int i = name == null ? -1 : name.indexOf(':');
         return i >= 0 ? name.substring(i + 1) : name;
+    }
+
+    /** "RecipesArmorDyes" → "armor_dyes"(1.8.9 配方注册名合成:类名 camelCase → snake_case)。 */
+    private static String snakeCase(String camel) {
+        StringBuilder sb = new StringBuilder();
+        for (char c : camel.toCharArray()) {
+            if (Character.isUpperCase(c)) {
+                if (sb.length() > 0) sb.append('_');
+                sb.append(Character.toLowerCase(c));
+            } else { sb.append(c); }
+        }
+        return sb.toString();
     }
 
     /** "max_health" → "maxHealth"(1.8.9 属性字段名 camelCase)。 */

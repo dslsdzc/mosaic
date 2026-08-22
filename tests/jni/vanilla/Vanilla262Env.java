@@ -55,4 +55,37 @@ public class Vanilla262Env implements VanillaEnv {
         // 契约只断言 register 后的 registered() 列表(见 VanillaContractTest 注释)。
         return ReflectUtil.callConstructor("com.mojang.brigadier.CommandDispatcher");
     }
+    public Object enchantmentObject() throws Exception {
+        // 26.2 Enchantment 为记录(非抽象类),契约环境可轻参构造(逆向核实
+        // Enchantment.java:47 record Enchantment(Component, EnchantmentDefinition,
+        // HolderSet, DataComponentMap)):
+        // 1) description:Component.translatable("enchantment.damage.all")
+        //    (Component.java:139)——与 1.8.9 Enchantment.sharpness.getName() 同键
+        //    (1.8.9 实测 "enchantment.damage.all",protectionName[0],
+        //    EnchantmentDamage.java:15;任务 doc 示例 "enchantment.damage.sharpness"
+        //    为 1.9+ 命名,1.8.9 用 damage.all),契约可断言精确本地化键(双代同值);
+        // 2) definition:Enchantment$EnchantmentDefinition 构造器(HolderSet, Optional,
+        //    int, int, Cost, Cost, int, List)——supportedItems 用
+        //    HolderSet.direct(List.of(Items.DIAMOND.builtInRegistryHolder()))
+        //    (HolderSet.java:57 List 重载;varargs 重载 ReflectUtil 不可匹配);
+        //    cost 用 Enchantment$Cost(base, perLevelAboveFirst) 构造器;
+        // 3) exclusiveSet:HolderSet.empty()(HolderSet.java:48);effects:DataComponentMap.EMPTY。
+        Object desc = ReflectUtil.callStatic("net.minecraft.network.chat.Component",
+                "translatable", "enchantment.damage.all");
+        Object item = ReflectUtil.fieldStatic("net.minecraft.world.item.Items", "DIAMOND");
+        Object holder = ReflectUtil.call(item, "builtInRegistryHolder");
+        Object supported = ReflectUtil.callStatic("net.minecraft.core.HolderSet",
+                "direct", java.util.List.of(holder));
+        Object cost = ReflectUtil.callConstructor(
+                "net.minecraft.world.item.enchantment.Enchantment$Cost", 1, 0);
+        Object def = ReflectUtil.callConstructor(
+                "net.minecraft.world.item.enchantment.Enchantment$EnchantmentDefinition",
+                supported, java.util.Optional.empty(), 5, 3, cost, cost, 1,
+                java.util.List.of(ReflectUtil.fieldStatic(
+                        "net.minecraft.world.entity.EquipmentSlotGroup", "MAINHAND")));
+        Object exclusive = ReflectUtil.callStatic("net.minecraft.core.HolderSet", "empty");
+        Object effects = ReflectUtil.fieldStatic("net.minecraft.core.component.DataComponentMap", "EMPTY");
+        return ReflectUtil.callConstructor("net.minecraft.world.item.enchantment.Enchantment",
+                desc, def, exclusive, effects);
+    }
 }

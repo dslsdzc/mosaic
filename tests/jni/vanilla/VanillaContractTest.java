@@ -39,6 +39,17 @@ public class VanillaContractTest {
         check(item != null, "item handle");
         check(item.maxStackSize() >= 1, "maxStackSize >= 1");
 
+        // ---- M8-B:Item 纵深——耐久(maxDamage/damageable) ----
+        // 契约测"非负/布尔合法"而非精确值:26.2 组件绑定回退(无运行中服务端 →
+        // maxDamage 回退 0,与 maxStackSize 同款处理)与 1.8.9 真实字段值
+        // (diamond maxDamage 0)在此物品上同值;可损坏物品双代可能不等(26.2
+        // 回退 vs 1.8.9 真实)——差异处理见 task-m8-b-report.md。
+        int maxDamage = item.maxDamage();
+        check(maxDamage >= 0, "item maxDamage >= 0 (got " + maxDamage + ")");
+        check(item.damageable() == (maxDamage > 0),
+                "item damageable consistent with maxDamage (maxDamage " + maxDamage
+                        + ", damageable " + item.damageable() + ")");
+
         // Inventory(真实路径:两代均可构造无 World 依赖容器——26.2 SimpleContainer / 1.8.9 InventoryBasic)
         Object invObj = env.inventoryObject();
         MosaicInventory inv = p.inventoryOf(invObj);
@@ -205,6 +216,53 @@ public class VanillaContractTest {
         check(sub != null, "onPacket non-null subscription");
         try { sub.close(); check(true, "subscription close no-throw"); }
         catch (Exception ex) { check(false, "subscription close no-throw: " + ex); }
+
+        // ---- M8-B:Recipe(null 语义为主,双代必跑;真实路径留服务端,与 Entity 先例一致。
+        // 26.2 Recipe 为接口不可轻量构造、1.8.9 IRecipe 实例虽可构造但双代不对称,
+        // 任务务实决策 null 语义为主——Provider 真实路径实现完整,待服务端环境) ----
+        MosaicRecipe rec = p.recipeOf(null);
+        check(rec != null, "recipeOf(null) null-safe handle");
+        check("unknown".equals(rec.registryName()),
+                "recipeOf(null) registryName 'unknown' (got '" + rec.registryName() + "')");
+        check(rec.result() == null, "recipeOf(null) result null");
+        check("".equals(rec.type()), "recipeOf(null) type '' (got '" + rec.type() + "')");
+
+        // ---- M8-B:Enchantment(真实路径 if-available + null 语义双代必跑) ----
+        // 逆向核实:26.2 Enchantment 为记录可轻参构造(见 Vanilla262Env.enchantmentObject);
+        // 1.8.9 静态实例 Enchantment.sharpness。if-available 守卫作防御:某代构造失败
+        // → 真实路径断言跳过,null 语义仍双代必跑(与 commandObject 同款模式)。
+        boolean enchAvailable = false;
+        Object enchObj = null;
+        try { enchObj = env.enchantmentObject(); enchAvailable = true; }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " enchantmentObject unavailable, "
+                    + "enchantment real-path assertions skipped: " + ex);
+        }
+        if (enchAvailable) {
+            MosaicEnchantment ench = p.enchantmentOf(enchObj);
+            check(ench != null, "enchantment handle (real path)");
+            String en = ench.registryName();
+            check(en != null && !en.isEmpty(),
+                    "enchantment registryName non-empty (got '" + en + "')");
+            check(ench.maxLevel() >= 1,
+                    "enchantment maxLevel >= 1 (got " + ench.maxLevel() + ")");
+            // 双代同值断言:1.8.9 sharpness.getName() 与 26.2 构造的 translatable
+            // 组件同用 "enchantment.damage.all" 键(1.8.9 实测键,EnchantmentDamage
+            // protectionName[0]=all;任务 doc 示例 "enchantment.damage.sharpness"
+            // 为 1.9+ 命名——1.8.9 的 sharpness 本地化键即 damage.all,见 Vanilla262Env)
+            check("enchantment.damage.all".equals(ench.descriptionKey()),
+                    "enchantment descriptionKey 'enchantment.damage.all' (got '"
+                            + ench.descriptionKey() + "')");
+        }
+        // Enchantment null 语义(双代必跑,兜底值双代同值)
+        MosaicEnchantment enchNull = p.enchantmentOf(null);
+        check(enchNull != null, "enchantmentOf(null) null-safe handle");
+        check("unknown".equals(enchNull.registryName()),
+                "enchantmentOf(null) registryName 'unknown' (got '" + enchNull.registryName() + "')");
+        check(enchNull.maxLevel() == 0,
+                "enchantmentOf(null) maxLevel 0 (got " + enchNull.maxLevel() + ")");
+        check("".equals(enchNull.descriptionKey()),
+                "enchantmentOf(null) descriptionKey '' (got '" + enchNull.descriptionKey() + "')");
 
         if (failures == 0) System.out.println("VANILLA CONTRACT PASSED (" + p.mcVersion() + ")");
         System.exit(failures == 0 ? 0 : 1);

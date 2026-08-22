@@ -16,4 +16,7 @@ public interface VanillaEnv {
     Object inventoryObject() throws Exception;
     /** 无服务器依赖的可构造命令对象(26.2:CommandDispatcher 无参;1.8.9:CommandHandler 隐式无参)。 */
     Object commandObject() throws Exception;
+    /** 附魔对象(if-available 守卫:26.2 轻参构造 Enchantment 记录;1.8.9 静态实例
+     *  Enchantment.sharpness);不可构造则抛 → 契约跳过真实路径断言。 */
+    Object enchantmentObject() throws Exception;
 }
