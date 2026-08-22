@@ -109,13 +109,21 @@ bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 
 | PlayerList.remove(ServerPlayer) | `alk.c (Laig;)V` | `onPlayerLeave`(方法尾) |
 | ServerPlayerGameMode.destroyBlock(BlockPos) | `aih.a (Lgu;)Z` | `onBlockBreak`(入口,取破坏前状态) |
 | Commands.performPrefixedCommand(CommandSourceStack, String) | `dt.a (Lds;Ljava/lang/String;)I` | `onCommand`(入口,消费 `/mosaic`) |
+| Commands.performCommand(ParseResults, String)(游戏内聊天命令漏斗) | `dt.a (Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I` | `onChatCommand`(入口,消费 `/mosaic`;source 从 ParseResults 提取) |
+| BlockItem.placeBlock(BlockPlaceContext, BlockState) | `cds.a (Lcih;Ldcb;)Z` | `onBlockPlace`(入口,state = 实际放置状态) |
+| ServerLevel.addFreshEntity(Entity) | `aif.b (Lbfj;)Z` | `onEntitySpawn`(入口) |
+| ServerGamePacketListenerImpl.handleChat(ServerboundChatPacket) | `aiy.a (Lzi;)V` | `onPlayerChat`(入口,player = 字段 `aiy.b`) |
+| ServerPlayer.die(DamageSource) | `aig.a (Lben;)V` | `onPlayerDeath`(入口) |
 | MinecraftServer.tickServer(BooleanSupplier) | `MinecraftServer.a (Ljava/util/function/BooleanSupplier;)V` | `onServerTick`(方法尾,每 tick 派发) |
 
 (1.20.1 中 mojmap 的 `performCommand(CommandSourceStack,String)` 已被
 ProGuard 内联,**控制台/RCON 命令**统一漏斗 = `performPrefixedCommand`;
-游戏内聊天命令暂未挂钩——独立反汇编证实聊天命令不走该漏斗(走
-`dt.a(ParseResults,String)`,即 mojmap `performCommand(ParseResults,String)`
-路径),需 hook 该点,留待后续。)
+**游戏内聊天命令已挂钩**(M8-D):独立反汇编证实聊天命令不走
+`performPrefixedCommand` 漏斗(走 `dt.a(ParseResults,String)`,即 mojmap
+`performCommand(ParseResults,String)` 路径)——M8-D 已 hook 该点,入口
+消费 `/mosaic`。M8-D 同时新增 block_place/entity_spawn/player_chat/
+player_death 四个事件 hook(签名均经 server_mappings + javap 核实,
+记录见 `.superpowers/sdd/task-m8-d-report.md`)。)
 
 关键工程点:
 
@@ -202,6 +210,6 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 ## 已知边界
 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
-- 游戏内聊天命令暂未挂钩(仅控制台/RCON 命令漏斗)。
+- 网络真实路径未实现(Connection 挂钩 + 包序列化过桥为 M8-D 之后的后续设计项,记录在任务报告)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
 - 原版能力域 API 已由 M5/M6 补齐(19 个零实现接口全部就绪:entity/block/item/registry/状态/触发/元数据等,含双代 Provider)——见 `docs/` 与 `tests/jni/vanilla/`。

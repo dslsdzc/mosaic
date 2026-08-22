@@ -20,7 +20,8 @@ import org.objectweb.asm.Opcodes;
  * 只用其单一核心 jar 的 core API——ClassReader/ClassVisitor/ClassWriter)。
  *
  * 白名单(1.20.1 官方 server.jar 混淆名,mojmap → 混淆映射见 MosaicHooks 注释;
- * 全部经 Mojang server_mappings + javap 核实):
+ * 全部经 Mojang server_mappings + javap 核实;M8-D 新增 5 点,签名核实
+ * 记录见 .superpowers/sdd/task-m8-d-report.md):
  *   - alk = net.minecraft.server.players.PlayerList
  *       a(Lsd;Laig;)V = placeNewPlayer    → 方法尾注入 onPlayerJoin(ServerPlayer)
  *       c(Laig;)V     = remove            → 方法尾注入 onPlayerLeave(ServerPlayer)
@@ -31,6 +32,28 @@ import org.objectweb.asm.Opcodes;
  *       a(Lds;Ljava/lang/String;)I = performPrefixedCommand(控制台/RCON 命令漏斗)
  *                                          → 方法入口注入 onCommand;返回 true 则
  *                                            ICONST_1 IRETURN 消费命令
+ *       a(Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I =
+ *          performCommand(ParseResults,String) 游戏内聊天命令漏斗
+ *          (ServerGamePacketListenerImpl.performChatCommand 反汇编证实:
+ *          CommandDispatcher.parse → dt.a(ParseResults,UnaryOperator) →
+ *          dt.a(ParseResults,String) 执行;返回结果被调用方 pop 丢弃)
+ *          → 方法入口注入 onChatCommand;返回 true 则 ICONST_1 IRETURN 消费
+ *   - cds = net.minecraft.world.item.BlockItem
+ *       a(Lcih;Ldcb;)Z = placeBlock(BlockPlaceContext,BlockState)
+ *          (1.20.1 放置成功路径的稳定注入点:place() 校验通过后才调
+ *          placeBlock,入参 state 即实际放置的方块状态)
+ *          → 方法入口注入 onBlockPlace(ctx,state)
+ *   - aif = net.minecraft.server.level.ServerLevel
+ *       b(Lbfj;)Z     = addFreshEntity   → 方法入口注入 onEntitySpawn(entity)
+ *                                          (服务端实体生成统一漏斗:
+ *                                          addFreshEntityWithPassengers → addFreshEntity
+ *                                          → addEntity,javap 证实)
+ *   - aiy = net.minecraft.server.network.ServerGamePacketListenerImpl
+ *       a(Lzi;)V      = handleChat(ServerboundChatPacket)(非 "/" 聊天包入口;
+ *                                          "/" 命令走 zh 包路径,不入此 hook)
+ *          → 方法入口注入 onPlayerChat(handler)(player 字段 = aiy.b)
+ *   - aig = net.minecraft.server.level.ServerPlayer
+ *       a(Lben;)V     = die(DamageSource)→ 方法入口注入 onPlayerDeath(player)
  *   - net/minecraft/server/MinecraftServer
  *       a(Ljava/util/function/BooleanSupplier;)V = tickServer → 方法尾注入
  *                                          onServerTick(this)(每 tick 派发 "tick")
@@ -59,6 +82,24 @@ public final class MosaicTransformer implements ClassFileTransformer {
         /* dt = net.minecraft.commands.Commands(performPrefixedCommand) */
         put("dt", "a", "(Lds;Ljava/lang/String;)I", Kind.CONSUME, null,
             "onCommand", "(Ljava/lang/Object;Ljava/lang/String;)Z");
+        /* dt = net.minecraft.commands.Commands(performCommand(ParseResults,String),
+           游戏内聊天命令漏斗,M8-D) */
+        put("dt", "a", "(Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I",
+            Kind.CONSUME, null,
+            "onChatCommand", "(Ljava/lang/Object;Ljava/lang/String;)Z");
+        /* cds = net.minecraft.world.item.BlockItem(placeBlock(BlockPlaceContext,
+           BlockState) = 1.20.1 放置成功路径的稳定注入点,M8-D) */
+        put("cds", "a", "(Lcih;Ldcb;)Z", Kind.START, new int[]{1, 2},
+            "onBlockPlace", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+        /* aif = net.minecraft.server.level.ServerLevel(addFreshEntity,M8-D) */
+        put("aif", "b", "(Lbfj;)Z", Kind.START, new int[]{1},
+            "onEntitySpawn", "(Ljava/lang/Object;)V");
+        /* aiy = ServerGamePacketListenerImpl(handleChat,M8-D) */
+        put("aiy", "a", "(Lzi;)V", Kind.START, new int[]{0},
+            "onPlayerChat", "(Ljava/lang/Object;)V");
+        /* aig = net.minecraft.server.level.ServerPlayer(die(DamageSource),M8-D) */
+        put("aig", "a", "(Lben;)V", Kind.START, new int[]{0},
+            "onPlayerDeath", "(Ljava/lang/Object;)V");
         /* MinecraftServer.tickServer(未混淆) */
         put("net/minecraft/server/MinecraftServer", "a",
             "(Ljava/util/function/BooleanSupplier;)V", Kind.END, new int[]{0},
@@ -69,6 +110,10 @@ public final class MosaicTransformer implements ClassFileTransformer {
         DISPLAY.put("alk", "net.minecraft.server.players.PlayerList");
         DISPLAY.put("aih", "net.minecraft.server.level.ServerPlayerGameMode");
         DISPLAY.put("dt", "net.minecraft.commands.Commands");
+        DISPLAY.put("cds", "net.minecraft.world.item.BlockItem");
+        DISPLAY.put("aif", "net.minecraft.server.level.ServerLevel");
+        DISPLAY.put("aiy", "net.minecraft.server.network.ServerGamePacketListenerImpl");
+        DISPLAY.put("aig", "net.minecraft.server.level.ServerPlayer");
         DISPLAY.put("net/minecraft/server/MinecraftServer", "net.minecraft.server.MinecraftServer");
     }
 
@@ -110,11 +155,40 @@ public final class MosaicTransformer implements ClassFileTransformer {
             final boolean[] changed = {false};
             /* 帧:COMPUTE_FRAMES 重算(类加载期,目标类可能尚未加载;
                公共父类用定义加载器解析,失败回退 Object——最坏情况帧精度下降) */
+            /* 正在转换的类:定义尚未完成,Class.forName 会重入 loadClass →
+               findClass → 同一名字二次 defineClass → "attempted duplicate
+               class definition" LinkageError(实测:转换 aig(ServerPlayer)时
+               其方法帧合并需要 commonSuper(aig, bfj),Class.forName("aig")
+               重入即崩;M8-D 新增 aig 转换后触发)。处理:把 current 替换为
+               其直接父类(父类在子类 defineClass 前必已加载,可安全加载;
+               vanilla 无类继承 aig/aiy/cds/aif,故 LUB(current,t2) =
+               LUB(super(current),t2))。注意不能简单回退 Object——帧合并
+               类型被放宽后,下游 putfield/invokevirtual 仍按 bfj 校验会
+               VerifyError(实测 aig.c(Lbfj;)V)。 */
+            final String[] currentSuper = {null};
+            try {
+                new ClassReader(classfileBuffer).accept(new ClassVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visit(int version, int access, String name, String signature,
+                                      String superName, String[] interfaces) {
+                        currentSuper[0] = superName;
+                    }
+                }, 0);
+            } catch (Throwable t) { /* superName 解析失败 → 保持 null,走下方回退 */ }
+            final String current = className;
             ClassWriter cw = new ClassWriter(
                     ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS) {
                 @Override
                 protected String getCommonSuperClass(String t1, String t2) {
                     if (t1.equals(t2)) return t1;
+                    if (t1.equals(current)) {
+                        if (currentSuper[0] == null) return "java/lang/Object";
+                        t1 = currentSuper[0];
+                    } else if (t2.equals(current)) {
+                        if (currentSuper[0] == null) return "java/lang/Object";
+                        t2 = currentSuper[0];
+                    }
+                    if (t1.equals(t2)) return t1;   /* 替换后可能收敛 */
                     ClassLoader cl = serverLoader != null ? serverLoader
                             : MosaicTransformer.class.getClassLoader();
                     try {

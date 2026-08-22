@@ -9,9 +9,9 @@ import java.lang.reflect.Method;
  * M4-2:注入目标的静态 hook 集合(由 MosaicTransformer 在 vanilla 1.20.1 服务端
  * 方法内插入静态调用;所有方法 try-catch,注入代码不得崩服务端)。
  *
- * 类签名核实(2026-08-22,官方 server.jar 1.20.1 的 ProGuard 混淆名,经 Mojang
- * server_mappings 映射 + javap 逐项确认;Mojang 自 1.20.1 起对服务端 jar 做
- * ProGuard 混淆,mojmap 名在运行时不存在):
+ * 类签名核实(2026-08-22 + 2026-08-23 M8-D,官方 server.jar 1.20.1 的
+ * ProGuard 混淆名,经 Mojang server_mappings(server.txt)+ javap 逐项确认;
+ * Mojang 自 1.20.1 起对服务端 jar 做 ProGuard 混淆,mojmap 名在运行时不存在):
  *   - net.minecraft.server.players.PlayerList        -> alk
  *       placeNewPlayer(Connection,ServerPlayer)      -> a      (desc (Lsd;Laig;)V)
  *       remove(ServerPlayer)                         -> c      (desc (Laig;)V)
@@ -21,18 +21,45 @@ import java.lang.reflect.Method;
  *   - net.minecraft.commands.Commands                -> dt
  *       performPrefixedCommand(CommandSourceStack,String) -> a  (desc (Lds;Ljava/lang/String;)I;
  *       控制台/RCON 命令漏斗;mojmap 的 performCommand(CommandSourceStack,String)
- *       已被 ProGuard 内联,运行时不存在。游戏内聊天命令不走此方法(独立
- *       反汇编证实走 dt.a(ParseResults,String) = performCommand(ParseResults,
- *       String) 路径),暂未 hook,留待后续)
+ *       已被 ProGuard 内联,运行时不存在)
+ *       performCommand(ParseResults,String)          -> a  (desc (Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I;
+ *       M8-D:游戏内聊天命令漏斗。aiy.performChatCommand 反汇编证实:
+ *       CommandDispatcher.parse → dt.a(ParseResults,UnaryOperator)(继续) →
+ *       dt.a(ParseResults,String) 执行,返回结果被调用方 pop 丢弃。brigadier
+ *       未混淆但由 bundler 加载器加载 → 经 serverLoader 反射取
+ *       ParseResults.getContext().getSource() = CommandSourceStack(ds))
+ *   - net.minecraft.world.item.BlockItem             -> cds
+ *       placeBlock(BlockPlaceContext,BlockState)     -> a  (desc (Lcih;Ldcb;)Z;
+ *       M8-D:block_place 注入点——1.20.1 放置成功路径:place() 校验通过后
+ *       才调用 placeBlock,入参 state = 实际放置的方块状态(比 useItemOn
+ *       入口更精准:useItemOn 对任何右键交互触发,且拿不到放置后状态))
+ *   - net.minecraft.server.level.ServerLevel        -> aif
+ *       addFreshEntity(Entity)                       -> b  (desc (Lbfj;)Z;
+ *       M8-D:服务端实体生成统一漏斗——反汇编证实 addFreshEntity → addEntity
+ *       (j);Level.addFreshEntityWithPassengers(实体带乘客)调 addFreshEntity)
+ *   - net.minecraft.server.network.ServerGamePacketListenerImpl -> aiy
+ *       handleChat(ServerboundChatPacket)            -> a  (desc (Lzi;)V;
+ *       M8-D:player_chat 注入点——非 "/" 聊天包入口;"/" 命令走 zh 包
+ *       (handleChatCommand → performChatCommand → dt.a(ParseResults,String)),
+ *       不触发本 hook,与 player_chat/player_command 语义划分一致)
+ *       字段 player -> b(net.minecraft.server.level.ServerPlayer)
+ *   - net.minecraft.server.level.ServerPlayer       -> aig
+ *       die(DamageSource)                            -> a  (desc (Lben;)V;
+ *       M8-D:player_death 注入点;另有 actuallyHurt = a(Lben;F)Z 区分)
  *   - net.minecraft.server.MinecraftServer           -> 未混淆
  *       tickServer(BooleanSupplier)                  -> a      (desc (Ljava/util/function/BooleanSupplier;)V)
  *       getTickCount()                               -> ag
- *   - 反射用:Entity.getId() -> bfj.af()、BlockPos.asLong() -> gu.a()、
- *     BlockPos.getX/Y/Z(long) -> gu.a/b/c(J)、Level.getBlockState(BlockPos) ->
- *     cmm.a_(Lgu;)(aif 继承)、Block.getId(BlockState) -> cpn.i(Ldcb;)
+ *   - 反射用(M8-D 新增已核实):Entity.getId() -> bfj.af()、Entity.getType() ->
+ *     bfj.ae()、EntityType.getId() -> bfn.a()、Entity.getX/Y/Z() ->
+ *     bfj.dn/dp/dt()、BlockPos.asLong() -> gu.a()、BlockPos.getX/Y/Z(long) ->
+ *     gu.a/b/c(J)、Level.getBlockState(BlockPos) -> cmm.a_(Lgu;)(aif 继承)、
+ *     Block.getId(BlockState) -> cpn.i(Ldcb;)、UseOnContext(BlockPlaceContext
+ *     父类)getPlayer/getClickedPos -> cij.o()/cij.a()、
+ *     ParseResults.getContext()/CommandContext.getSource()(brigadier 未混淆)
  *
  * 载荷(小端 LE,与 include/mosaic/events.h 一致):
- *   player_join/player_leave/tick = 4B u32;block_break = 20B(player_id/x/y/z/block_type)。
+ *   player_join/player_leave/tick/player_chat/player_death = 4B u32;
+ *   block_break/block_place/entity_spawn = 20B(5×u32)。
  */
 public final class MosaicHooks {
 
@@ -40,7 +67,8 @@ public final class MosaicHooks {
 
     private static long rt;                                     /* 0 = 未打开,全部 no-op */
     private static final String[] EVENTS = {
-        "player_join", "player_leave", "block_break", "tick", "server_command"
+        "player_join", "player_leave", "block_break", "tick", "server_command",
+        "block_place", "entity_spawn", "player_chat", "player_death",
     };
     private static final int[] EV_IDS = new int[EVENTS.length];
     private static final long[] EV_EXEC = new long[EVENTS.length];   /* dispatch 返回执行数累积 */
@@ -56,6 +84,18 @@ public final class MosaicHooks {
     private static Method M_GET_X, M_GET_Y, M_GET_Z;  /* gu.a/b/c(J)I */
     private static Method M_BLOCK_ID;      /* cpn.i(Ldcb;)I */
     private static Method M_TICK_COUNT;    /* MinecraftServer.ag()I */
+    /* M8-D:entity_spawn 载荷 */
+    private static Method M_ENTITY_TYPE;   /* bfj.ae()Lbfn; (Entity.getType) */
+    private static Method M_ENTITY_TYPE_ID;/* bfn.a()I (EntityType.getId) */
+    private static Method M_ENT_X, M_ENT_Y, M_ENT_Z;  /* bfj.dn/dp/dt()D */
+    /* M8-D:player_chat 载荷(aiy 的 player 字段) */
+    private static Field  F_AIY_PLAYER;    /* aiy.b (ServerGamePacketListenerImpl.player) */
+    /* M8-D:block_place 载荷(BlockPlaceContext 继承 cij=UseOnContext) */
+    private static Method M_CTX_PLAYER;    /* cij.o()Lbyo; (getPlayer,可 null) */
+    private static Method M_CTX_POS;       /* cij.a()Lgu; (getClickedPos) */
+    /* M8-D:chat 命令 source 提取(brigadier 未混淆,但由 bundler 加载器加载) */
+    private static Method M_PARSE_CTX;     /* ParseResults.getContext() */
+    private static Method M_CTX_SRC;       /* CommandContext.getSource() */
     private static boolean reflected = false;
     private static boolean resolveWarned = false;
 
@@ -88,6 +128,21 @@ public final class MosaicHooks {
             M_GET_Z = gu.getMethod("c", long.class);
             M_BLOCK_ID = clazz("cpn").getMethod("i", clazz("dcb"));
             M_TICK_COUNT = clazz("net.minecraft.server.MinecraftServer").getMethod("ag");
+            /* M8-D:entity_spawn */
+            M_ENTITY_TYPE = clazz("bfj").getMethod("ae");
+            M_ENTITY_TYPE_ID = clazz("bfn").getMethod("a");
+            M_ENT_X = clazz("bfj").getMethod("dn");
+            M_ENT_Y = clazz("bfj").getMethod("dp");
+            M_ENT_Z = clazz("bfj").getMethod("dt");
+            /* M8-D:player_chat(aiy.b 字段) */
+            F_AIY_PLAYER = clazz("aiy").getDeclaredField("b");
+            F_AIY_PLAYER.setAccessible(true);
+            /* M8-D:block_place(cij = UseOnContext,BlockPlaceContext 父类) */
+            M_CTX_PLAYER = clazz("cij").getMethod("o");
+            M_CTX_POS = clazz("cij").getMethod("a");
+            /* M8-D:chat 命令 source(brigadier 未混淆,按名字反射) */
+            M_PARSE_CTX = clazz("com.mojang.brigadier.ParseResults").getMethod("getContext");
+            M_CTX_SRC = clazz("com.mojang.brigadier.context.CommandContext").getMethod("getSource");
             reflected = true;
             System.out.println("Mosaic agent: hook reflection ready");
         } catch (Throwable t) {
@@ -142,18 +197,110 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("onBlockBreak", t); }
     }
 
-    /* ---- 注入 hook:命令(控制台/RCON 漏斗入口;"/mosaic" 前缀消费,返回 true;
-       游戏内聊天命令不走此点(见头注释),暂未 hook) ---- */
+    /* ---- 注入 hook:命令(控制台/RCON 漏斗入口;"/mosaic" 前缀消费,返回 true) ---- */
     public static boolean onCommand(Object src, String cmd) {
         try {
-            /* "/mosaic" 后必须跟空白或结尾,避免误消费 "/mosaictest" 等前缀命令 */
-            if (cmd == null || (!cmd.equals("/mosaic") && !cmd.startsWith("/mosaic "))) return false;
-            handleMosaic(cmd);
-            return true;
+            return handleCommand(cmd);
         } catch (Throwable t) {
             logErr("onCommand", t);
             return true;   /* 已判定为 /mosaic,消费避免触发"未知命令" */
         }
+    }
+
+    /* ---- 注入 hook:游戏内聊天命令(M8-D;dt.a(ParseResults,String) =
+       performCommand(ParseResults,String) 入口;signature 无 CommandSourceStack
+       参数,从 ParseResults.getContext().getSource() 反射提取) ---- */
+    public static boolean onChatCommand(Object results, String cmd) {
+        try {
+            /* 提取 source(失败不阻断:/mosaic 处理不依赖 source) */
+            if (results != null && M_PARSE_CTX != null && M_CTX_SRC != null) {
+                try {
+                    Object ctx = M_PARSE_CTX.invoke(results);
+                    if (ctx != null) M_CTX_SRC.invoke(ctx);
+                } catch (Throwable t) { /* 提取失败按 null 处理 */ }
+            }
+            return handleCommand(cmd);
+        } catch (Throwable t) {
+            logErr("onChatCommand", t);
+            return true;   /* 已判定为 /mosaic,消费避免"未知命令"反馈 */
+        }
+    }
+
+    /* 共享命令处理:仅 "/mosaic" 前缀命令由本 agent 消费 */
+    private static boolean handleCommand(String cmd) {
+        /* "/mosaic" 后必须跟空白或结尾,避免误消费 "/mosaictest" 等前缀命令 */
+        if (cmd == null || (!cmd.equals("/mosaic") && !cmd.startsWith("/mosaic "))) return false;
+        handleMosaic(cmd);
+        return true;
+    }
+
+    /* ---- 注入 hook:block_place(M8-D;BlockItem.placeBlock(BlockPlaceContext,
+       BlockState) 入口——place() 校验通过后才调 placeBlock,入参 state 即
+       实际放置的方块状态;ctx = BlockPlaceContext(继承 cij=UseOnContext),
+       getPlayer 可能为 null(如发射器放置)→ player_id=0) ---- */
+    public static void onBlockPlace(Object ctx, Object state) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            Object pos = M_CTX_POS.invoke(ctx);
+            long packed = (Long) M_AS_LONG.invoke(pos);
+            Object player = M_CTX_PLAYER.invoke(ctx);
+            int playerId = 0;
+            if (player != null) playerId = (Integer) M_ID.invoke(player);
+            byte[] b = new byte[20];
+            putIntLE(b, 0, playerId);
+            putIntLE(b, 4, (Integer) M_GET_X.invoke(null, packed));
+            putIntLE(b, 8, (Integer) M_GET_Y.invoke(null, packed));
+            putIntLE(b, 12, (Integer) M_GET_Z.invoke(null, packed));
+            putIntLE(b, 16, (Integer) M_BLOCK_ID.invoke(null, state));
+            dispatch(5, b);
+        } catch (Throwable t) { logErr("onBlockPlace", t); }
+    }
+
+    /* ---- 注入 hook:entity_spawn(M8-D;ServerLevel.addFreshEntity(Entity)
+       入口——服务端实体生成统一漏斗,含带乘客路径) ---- */
+    public static void onEntitySpawn(Object e) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            byte[] b = new byte[20];
+            putIntLE(b, 0, (Integer) M_ID.invoke(e));
+            Object type = M_ENTITY_TYPE.invoke(e);
+            putIntLE(b, 4, type == null ? 0 : (Integer) M_ENTITY_TYPE_ID.invoke(type));
+            putIntLE(b, 8, (int) Math.floor((Double) M_ENT_X.invoke(e)));
+            putIntLE(b, 12, (int) Math.floor((Double) M_ENT_Y.invoke(e)));
+            putIntLE(b, 16, (int) Math.floor((Double) M_ENT_Z.invoke(e)));
+            dispatch(6, b);
+        } catch (Throwable t) { logErr("onEntitySpawn", t); }
+    }
+
+    /* ---- 注入 hook:player_chat(M8-D;ServerGamePacketListenerImpl.handleChat
+       入口——非 "/" 聊天包;player = aiy.b 字段) ---- */
+    public static void onPlayerChat(Object handler) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            Object player = F_AIY_PLAYER.get(handler);
+            if (player == null) return;
+            byte[] b = new byte[4];
+            putIntLE(b, 0, (Integer) M_ID.invoke(player));
+            dispatch(7, b);
+        } catch (Throwable t) { logErr("onPlayerChat", t); }
+    }
+
+    /* ---- 注入 hook:player_death(M8-D;ServerPlayer.die(DamageSource) 入口) ---- */
+    public static void onPlayerDeath(Object p) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            byte[] b = new byte[4];
+            putIntLE(b, 0, (Integer) M_ID.invoke(p));
+            dispatch(8, b);
+        } catch (Throwable t) { logErr("onPlayerDeath", t); }
     }
 
     /* ---- 注入 hook:服务端 tick(每 tick 派发,计数在 /mosaic status 显示) ---- */
@@ -238,12 +385,14 @@ public final class MosaicHooks {
         switch (EVENTS[idx]) {
             case "server_command":
                 return new byte[0];                     /* 无载荷 */
-            case "tick": case "player_join": case "player_leave": {
-                byte[] b = new byte[4];                 /* u32 */
+            case "tick": case "player_join": case "player_leave":
+            case "player_chat": case "player_death": {  /* u32 */
+                byte[] b = new byte[4];
                 putIntLE(b, 0, vals.length > 0 ? vals[0] : 0);
                 return b;
             }
-            case "block_break": {                       /* player_id/x/y/z/block_type = 5×u32 */
+            case "block_break": case "block_place":     /* player_id/x/y/z/block_type = 5×u32 */
+            case "entity_spawn": {                      /* entity_id/entity_type/x/y/z = 5×u32 */
                 byte[] b = new byte[20];
                 for (int i = 0; i < 5; i++)
                     putIntLE(b, i * 4, vals.length > i ? vals[i] : 0);
