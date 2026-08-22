@@ -37,4 +37,7 @@ public interface MosaicRuntime {
     MosaicActivationGate activation();
     /** 能力注册表查询(纯 Java 层;require=必需,optional=可选)。 */
     MosaicCapabilityQuery capability();
+    /** 自诊断桥(Java↔C 内核通道):native 句柄与错误槽直读。 */
+    @Since(1)
+    MosaicBridge bridge();
 }

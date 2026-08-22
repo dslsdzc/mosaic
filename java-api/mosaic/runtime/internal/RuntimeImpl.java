@@ -1,9 +1,14 @@
 package mosaic.runtime.internal;
 
+import java.util.concurrent.ConcurrentHashMap;
 import mosaic.MosaicHandleException;
 import mosaic.runtime.*;
 
 public final class RuntimeImpl implements MosaicRuntime {
+    /* M6-A:活跃运行时登记(eventId → 名称反查用;事件 id 是包内排序位置,
+       子集 pack 必须经运行时探测 Native.eventId;close 时注销) */
+    private static final ConcurrentHashMap<Long, RuntimeImpl> LIVE = new ConcurrentHashMap<>();
+
     private final long rt;
     private final LifecycleImpl lifecycle = new LifecycleImpl(this);
     private final EventImpl events = new EventImpl(this);
@@ -18,8 +23,12 @@ public final class RuntimeImpl implements MosaicRuntime {
     private final ServiceRegistryImpl services = new ServiceRegistryImpl();
     private final CapabilityImpl capabilities = new CapabilityImpl();
     private final QueryBuilderImpl queryBuilder = new QueryBuilderImpl(index);
+    private final BridgeImpl bridge = new BridgeImpl(this);
 
-    private RuntimeImpl(long rt) { this.rt = rt; }
+    private RuntimeImpl(long rt) {
+        this.rt = rt;
+        LIVE.put(rt, this);
+    }
 
     public static MosaicRuntime open(String[] paths) {
         if (paths == null || paths.length == 0)
@@ -31,6 +40,9 @@ public final class RuntimeImpl implements MosaicRuntime {
 
     long handle() { return rt; }
 
+    /** 活跃运行时快照(EventPayloadImpl 反查 eventId → 名称用)。 */
+    static RuntimeImpl[] live() { return LIVE.values().toArray(new RuntimeImpl[0]); }
+
     public long functionCount() { return Native.functionCount(rt); }
     public int eventId(String name) { return Native.eventId(rt, name); }
     public int eventDispatch(int eventId, byte[] payload) { return Native.eventDispatch(rt, eventId, payload); }
@@ -40,7 +52,10 @@ public final class RuntimeImpl implements MosaicRuntime {
         if (Native.runtimeAddPack(rt, packPath) != 0)
             throw new MosaicHandleException("addPack failed (lastError=" + Native.lastError(rt) + ")");
     }
-    public void close() { Native.runtimeClose(rt); }
+    public void close() {
+        LIVE.remove(rt);
+        Native.runtimeClose(rt);
+    }
 
     public MosaicFunctionLifecycle lifecycle() { return lifecycle; }
     public MosaicEventDispatcher eventDispatcher() { return events; }
@@ -56,4 +71,5 @@ public final class RuntimeImpl implements MosaicRuntime {
     public MosaicTransaction txBegin(String patchPath) { return TxImpl.begin(rt, patchPath); }
     public MosaicActivationGate activation() { return gate; }
     public MosaicCapabilityQuery capability() { return capabilities; }
+    public MosaicBridge bridge() { return bridge; }
 }

@@ -1,7 +1,10 @@
+import java.util.Arrays;
 import mosaic.MosaicApi;
+import mosaic.MosaicHandleException;
 import mosaic.MosaicProviderNotFoundException;
 import mosaic.runtime.*;
 import mosaic.runtime.internal.CapabilityImpl;
+import mosaic.runtime.internal.EventPayloadImpl;
 import mosaic.runtime.internal.Native;
 
 /** Task 5 评审:Capability 域契约(注册 → require 命中 → optional miss → require miss 抛)。 */
@@ -65,6 +68,44 @@ public class ApiContractTest {
         MosaicEventCatalog cat = rt.eventCatalog();
         check(cat.find("player_join") != null, "catalog player_join");
         check(cat.find("zzz") == null, "catalog miss");
+
+        // ---- M6-A:事件载荷类型化解码 / 编解码工具 / 自诊断桥 ----
+        // player 域 {player_id=7}(4B 小端)→ decodeInts()[0]==7(测试包仅注册
+        // player_join(id 0),域判定走 EVENT_NAMES 探测路径)
+        int join = rt.eventId("player_join");
+        MosaicEventPayload pl = MosaicEventPayload.of(join, new byte[]{7, 0, 0, 0});
+        check(pl instanceof EventPayloadImpl, "factory returns EventPayloadImpl");
+        int[] fields = pl.decodeInts();
+        check(fields.length == 1 && fields[0] == 7,
+              "payload decode player_id==7, got " + Arrays.toString(fields));
+
+        // encode→decode 回环
+        byte[] enc = pl.encode();
+        check(enc.length == 4 && Arrays.equals(enc, new byte[]{7, 0, 0, 0}),
+              "payload encode round-trip");
+
+        // 失败语义(规格 §8:解码失败 → MosaicHandleException)
+        try { MosaicEventPayload.of(join, new byte[8]); check(false, "payload len mismatch should throw"); }
+        catch (MosaicHandleException e) { check(true, "payload len mismatch throws"); }
+        try { MosaicEventPayload.of(join, new byte[2]); check(false, "payload non-4-multiple should throw"); }
+        catch (MosaicHandleException e) { check(true, "payload non-4-multiple throws"); }
+        try { MosaicEventPayload.of(-1, new byte[4]); check(false, "unknown event id should throw"); }
+        catch (MosaicHandleException e) { check(true, "unknown event id throws"); }
+
+        // 编解码工具:encodeInts(1,2,3) → byte[12] → decodeInts 回环
+        MosaicPayloadCodec codec = MosaicPayloadCodec.littleEndian();
+        byte[] enc3 = codec.encodeInts(1, 2, 3);
+        int[] back = codec.decodeInts(enc3);
+        check(enc3.length == 12 && back.length == 3 && back[0] == 1 && back[2] == 3,
+              "codec encodeInts(1,2,3) round-trip");
+        int[] neg = codec.decodeInts(codec.encodeInts(-1, 0x7fffffff, 0x80000000));
+        check(neg[0] == -1 && neg[1] == 0x7fffffff && neg[2] == 0x80000000,
+              "codec preserves 32-bit range");
+
+        // 自诊断桥:句柄 != 0、lastError 可读且与运行时同源
+        MosaicBridge b = rt.bridge();
+        check(b.nativeHandle() != 0, "bridge nativeHandle != 0");
+        check(b.lastError() == rt.lastError(), "bridge lastError mirrors runtime");
 
         // 工作集驱逐(Task 5 评审加固:原 ws.count() <= 2 是空断言)
         MosaicWorkingSet ws = rt.workingSet();
