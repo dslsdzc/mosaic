@@ -78,4 +78,10 @@ extern const u32 mosaic_events_catalog_count;
 /* 目录内二分查找(与 builder 排序同序)。未命中/空名字 → NULL。 */
 const mosaic_ev_spec *mosaic_event_spec_by_name(const char *name);
 
+/* M6-D N2 目录访问器(跨语言一致性门禁用):返回第 index 个目录名(目录内
+   静态字符串,与 mosaic_events_catalog 同序);越界 → NULL。Java 契约测试
+   经 JNI 遍历全部名字与 EVENT_NAMES 常量表逐项比对——events.c 增删目录名
+   → Java 比对失败 → 测试红,防目录跨语言漂移。 */
+const char *mosaic_event_catalog_name(u32 index);
+
 #endif

@@ -235,3 +235,9 @@ const mosaic_ev_spec *mosaic_event_spec_by_name(const char *name) {
   }
   return NULL;
 }
+
+/* M6-D N2:目录访问器(跨语言一致性门禁;实现见 events.h 声明注释)。 */
+const char *mosaic_event_catalog_name(u32 index) {
+  if (index >= mosaic_events_catalog_count) return NULL;
+  return mosaic_events_catalog[index].name;
+}

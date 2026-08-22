@@ -91,4 +91,7 @@ public final class Native {
         return mosaic.Bridge.packInfoCount(rt, field); }
     public static int txPatchFnIds(long tx, long[] out) {
         return mosaic.Bridge.txPatchFnIds(tx, out); }
+    /* M6-D:事件目录访问器(契约门禁用) */
+    public static String eventCatalogName(int index) {
+        return mosaic.Bridge.eventCatalogName(index); }
 }

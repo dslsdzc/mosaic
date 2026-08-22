@@ -107,4 +107,8 @@ public final class Bridge {
     /* tx 补丁函数 id 列表(补丁 pack fn 表,按 fn_id 排序);out == null 探测
        返回总数,out != null 填充 min(cap, 总数) 条并返回实际写入数 */
     public static native int txPatchFnIds(long tx, long[] out);
+    /* ---- M6-D:事件目录访问器(契约门禁用) ---- */
+    /* 目录第 index 个事件名(events.c 静态目录,与 EventImpl.EVENT_NAMES 同序);
+       越界/负 index → null。契约测试遍历全部名字与 EVENT_NAMES 逐项比对。 */
+    public static native String eventCatalogName(int index);
 }

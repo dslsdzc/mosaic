@@ -19,6 +19,7 @@
 #include "mosaic/base.h"
 #include "mosaic/runtime.h"
 #include "mosaic/event.h"
+#include "mosaic/events.h"   /* M6-D:目录访问器(契约门禁) */
 /* M5-2:函数生命周期(pack.h/function.h)、item 描述符(descriptor.h)、驱逐
    (eviction.h)、租约(ownership.h)、依赖(deps.h)、事务(tx.h)、以及内部
    查询/模块装载(find_function_active/find_module_ex/mod_load/mod_unload,
@@ -143,6 +144,15 @@ JNIEXPORT jint JNICALL Java_mosaic_Bridge_lastError(JNIEnv *env, jclass cls,
                                                     jlong rt) {
   (void)env; (void)cls;
   return rt != 0 ? (jint)mosaic_runtime_last_error(rt_of(rt)) : 0;
+}
+
+/* M6-D N2:事件目录访问器(契约门禁)。返回目录第 index 个事件名(静态字符
+   串,NewStringUTF 拷贝);越界(含负 index 经 u32 包装)→ NULL。 */
+JNIEXPORT jstring JNICALL Java_mosaic_Bridge_eventCatalogName(JNIEnv *env, jclass cls,
+                                                              jint index) {
+  (void)cls;
+  const char *n = mosaic_event_catalog_name((u32)index);
+  return n ? (*env)->NewStringUTF(env, n) : NULL;
 }
 
 /* ===== M5:函数生命周期 ===== */

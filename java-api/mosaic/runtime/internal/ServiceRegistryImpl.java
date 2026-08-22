@@ -39,13 +39,13 @@ public final class ServiceRegistryImpl implements MosaicServiceRegistry {
 
     static final class ServiceRefImpl implements MosaicServiceRef {
         private final MosaicService service;
-        private boolean released;
 
         ServiceRefImpl(MosaicService service) { this.service = service; }
 
         public MosaicService service() { return service; }
 
-        /** 幂等:注册表条目不因 ref 释放而删除(条目生命周期 = register 覆盖)。 */
-        public void release() { released = true; }
+        /* M6-D:死字段 released 已删(只写不读)。幂等语义不变:注册表条目不因
+           ref 释放而删除(条目生命周期 = register 覆盖),release 无内部状态。 */
+        public void release() { }
     }
 }

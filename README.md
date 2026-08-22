@@ -204,4 +204,4 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
 - 游戏内聊天命令暂未挂钩(仅控制台/RCON 命令漏斗)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
-- M4 阶段 API 尚未覆盖原版能力域(entity/block/item/registry 等)——见 `docs/` 与规划中的 API 大类清单。
+- 原版能力域 API 已由 M5/M6 补齐(19 个零实现接口全部就绪:entity/block/item/registry/状态/触发/元数据等,含双代 Provider)——见 `docs/` 与 `tests/jni/vanilla/`。

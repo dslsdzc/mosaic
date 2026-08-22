@@ -9,7 +9,10 @@ public final class RuntimeImpl implements MosaicRuntime {
        子集 pack 必须经运行时探测 Native.eventId;close 时注销) */
     private static final ConcurrentHashMap<Long, RuntimeImpl> LIVE = new ConcurrentHashMap<>();
 
-    private final long rt;
+    /* M6-D:close 幂等守卫——close() 清零后所有方法经 handle()==0 短路(JNI
+       bridge 对 0 句柄一律安全返回 0/-1/NULL,见 bridge.c 头部注释),句柄
+       不再持有已释放指针。 */
+    private long rt;
     private final LifecycleImpl lifecycle = new LifecycleImpl(this);
     private final EventImpl events = new EventImpl(this);
     private final IndexImpl index = new IndexImpl(this);
@@ -59,9 +62,14 @@ public final class RuntimeImpl implements MosaicRuntime {
         if (Native.runtimeAddPack(rt, packPath) != 0)
             throw new MosaicHandleException("addPack failed (lastError=" + Native.lastError(rt) + ")");
     }
+    /** 关闭:幂等——重复调用空操作;close 后所有方法安全(JNI 0 句柄短路
+        返回默认值;bridge().nativeHandle() 同步归零)。 */
     public void close() {
-        LIVE.remove(rt);
-        Native.runtimeClose(rt);
+        long h = rt;
+        if (h == 0) return;
+        rt = 0;
+        LIVE.remove(h);
+        Native.runtimeClose(h);
     }
 
     public MosaicFunctionLifecycle lifecycle() { return lifecycle; }

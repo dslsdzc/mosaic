@@ -26,6 +26,15 @@ public class ApiContractTest {
         if (!cond) { System.err.println("FAIL: " + msg); failures++; }
     }
 
+    /** N2(M6-D)目录一致性门禁:反射读 EventCatalogImpl.EVENT_NAMES(包私有常量
+        表;测试在默认包,经反射访问——不扩大 java-api 公开面)。 */
+    static String[] eventNames() throws Exception {
+        Class<?> ec = Class.forName("mosaic.runtime.internal.EventImpl$EventCatalogImpl");
+        java.lang.reflect.Field f = ec.getDeclaredField("EVENT_NAMES");
+        f.setAccessible(true);
+        return (String[]) f.get(null);
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length < 1) { System.err.println("usage: ApiContractTest <pack>"); System.exit(2); }
         String pack = args[0];
@@ -76,6 +85,20 @@ public class ApiContractTest {
         MosaicEventCatalog cat = rt.eventCatalog();
         check(cat.find("player_join") != null, "catalog player_join");
         check(cat.find("zzz") == null, "catalog miss");
+        /* N2(M6-D):目录一致性门禁——C events.c 目录 ↔ Java EVENT_NAMES 逐名
+           比对。count() 是运行时注册数(本 pack 仅 player_join 1 个事件),
+           非目录大小;目录大小与逐项名字经 native eventCatalogName 访问器
+           遍历:任一侧增删/改名 → 比对失败 → 红。 */
+        check(cat.count() >= 1, "catalog count >= 1 (runtime-registered), got " + cat.count());
+        String[] javaNames = eventNames();
+        check(javaNames.length == 205, "EVENT_NAMES length == 205, got " + javaNames.length);
+        for (int i = 0; i < javaNames.length; i++) {
+            String cn = Native.eventCatalogName(i);
+            check(javaNames[i].equals(cn),
+                  "catalog name[" + i + "] drift: java='" + javaNames[i] + "' c='" + cn + "'");
+        }
+        check(Native.eventCatalogName(205) == null, "catalog accessor out-of-range -> null");
+        check(Native.eventCatalogName(-1) == null, "catalog accessor negative index -> null");
 
         // ---- M6-A:事件载荷类型化解码 / 编解码工具 / 自诊断桥 ----
         // player 域 {player_id=7}(4B 小端)→ decodeInts()[0]==7(测试包仅注册
@@ -358,6 +381,14 @@ public class ApiContractTest {
         catch (IllegalArgumentException e) { check(true, "M6C ref non-MosaicService throws"); }
 
         rt.close();
+
+        // M6-D:close 幂等守卫——重复 close 空操作;close 后方法安全(经 JNI
+        // 0 句柄短路返回默认值;bridge().nativeHandle() 同步归零)
+        rt.close();
+        check(rt.functionCount() == 0, "post-close functionCount safe (0)");
+        check(rt.eventId("player_join") == -1, "post-close eventId -1");
+        check(rt.workingSetCount() == 0, "post-close workingSetCount 0");
+        check(rt.bridge().nativeHandle() == 0, "post-close nativeHandle 0");
 
         // 版本守卫
         try { MosaicApi.requireApi(2); check(false, "requireApi(2) should throw"); }

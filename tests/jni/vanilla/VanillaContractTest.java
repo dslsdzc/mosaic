@@ -42,12 +42,11 @@ public class VanillaContractTest {
         c.putInt("i", 42);
         check(c.getInt("i") == 42, "nbt int roundtrip");
 
-        // Registry:id↔名
+        // Registry:id↔名(M6-D:恒真式断言行已删——id>=0||id==-1、name!=null||
+        // id==-1 对一切输入恒真,真断言在下方)
         Object regObj = env.registryObject();
         MosaicRegistry reg = p.registryOf(regObj);
         int id = reg.id("minecraft:stone");
-        check(id >= 0 || id == -1, "registry id lookup (stone=" + id + ")");
-        check(reg.name(id) != null || id == -1, "registry name lookup");
         // 接口契约:未注册名 → -1,未注册 id → null(26.2 DefaultedRegistry 需存在性守卫)
         check(reg.id("minecraft:not_a_block") == -1,
                 "unregistered name -> id -1 (got " + reg.id("minecraft:not_a_block") + ")");

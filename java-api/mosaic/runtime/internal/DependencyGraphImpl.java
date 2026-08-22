@@ -13,6 +13,7 @@ public final class DependencyGraphImpl implements MosaicDependencyGraph {
     public void forEachDep(long moduleId, LongConsumer consumer) {
         if (consumer == null) return;
         int n = Native.depForEach(rt.handle(), moduleId, null);
+        /* 模块不存在(depForEach 返回 -1)或无依赖(0)一律视为空遍历 */
         if (n <= 0) return;
         long[] out = new long[n];
         int w = Native.depForEach(rt.handle(), moduleId, out);
