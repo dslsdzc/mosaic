@@ -31,4 +31,8 @@ public interface MosaicRuntime {
     MosaicResourceManager resources();
     MosaicServiceRegistry services();
     MosaicQueryBuilder query();
+    /** 事务(滚动更新):begin(补丁 pack 路径);失败抛 MosaicHandleException。 */
+    MosaicTransaction txBegin(String patchPath);
+    /** 激活策略门(纯 Java 策略持有)。 */
+    MosaicActivationGate activation();
 }
