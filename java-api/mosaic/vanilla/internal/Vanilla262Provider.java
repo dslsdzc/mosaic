@@ -580,7 +580,7 @@ public final class Vanilla262Provider implements MosaicProvider {
         return new MosaicRecipe() {
             public String registryName() {
                 try {
-                    Object id = ReflectUtil.call(r, m("recipe.holder.id"));
+                    Object id = ReflectUtil.call(r, m("recipeholder.id"));
                     Object loc = ReflectUtil.call(id, m("reskey.identifier"));
                     return loc == null ? "unknown" : loc.toString();
                 } catch (Exception e) { return "unknown"; }

@@ -565,7 +565,7 @@ public final class Vanilla189Provider implements MosaicProvider {
      *  类加载即注册;见 Vanilla189Env);null → null-safe 句柄。registryName 经
      *  private static locationEnchantments 逆查(Map<ResourceLocation,Enchantment>,
      *  值身份匹配 → key.toString() = "minecraft:sharpness");maxLevel = getMaxLevel()
-     *  (EnchantmentDamage 为 5);descriptionKey = getName()("enchantment.damage.sharpness")。 */
+     *  (EnchantmentDamage 为 5);descriptionKey = getName()("enchantment.damage.all")。 */
     public MosaicEnchantment enchantmentOf(Object vanillaEnchantment) {
         if (vanillaEnchantment == null) return new NullSafeEnchantment();
         final Object e = vanillaEnchantment;

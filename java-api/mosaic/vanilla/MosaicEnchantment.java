@@ -6,6 +6,6 @@ public interface MosaicEnchantment {
     String registryName();
     /** 最大等级。 */
     int maxLevel();
-    /** 附魔描述名(本地化键,如 "enchantment.damage.sharpness")。 */
+    /** 附魔描述名(本地化键,如 "enchantment.damage.all")。 */
     String descriptionKey();
 }
