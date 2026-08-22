@@ -48,6 +48,25 @@ public class VanillaContractTest {
         int id = reg.id("minecraft:stone");
         check(id >= 0 || id == -1, "registry id lookup (stone=" + id + ")");
         check(reg.name(id) != null || id == -1, "registry name lookup");
+        // 接口契约:未注册名 → -1,未注册 id → null(26.2 DefaultedRegistry 需存在性守卫)
+        check(reg.id("minecraft:not_a_block") == -1,
+                "unregistered name -> id -1 (got " + reg.id("minecraft:not_a_block") + ")");
+        check(reg.name(-1) == null,
+                "unregistered id -> name null (got '" + reg.name(-1) + "')");
+        // 合法默认值注册名(id(air 的 id))仍须可解析
+        int airId = reg.id("minecraft:air");
+        check(airId >= 0 && "minecraft:air".equals(reg.name(airId)),
+                "default-registered air resolves (" + airId + " -> " + reg.name(airId) + ")");
+
+        // NBT:缺失键 getString → 空串(接口契约,26.2 Optional.empty 解包)
+        check(c.getString("missing").equals(""),
+                "nbt missing key -> empty string (got '" + c.getString("missing") + "')");
+
+        // World 令牌默认契约
+        String dim = world.dimension();
+        check(dim != null && !dim.isEmpty(), "world dimension non-empty (got '" + dim + "')");
+        check(world.entities().length == 0, "world entities empty");
+        check(world.gameTime() == 0, "world gameTime 0 (got " + world.gameTime() + ")");
 
         if (failures == 0) System.out.println("VANILLA CONTRACT PASSED (" + p.mcVersion() + ")");
         System.exit(failures == 0 ? 0 : 1);

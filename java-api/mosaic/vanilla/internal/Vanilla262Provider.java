@@ -387,14 +387,21 @@ public final class Vanilla262Provider implements MosaicProvider {
                 try {
                     if (registryName == null) return -1;
                     Object ident = ReflectUtil.callStatic(cls("identifier"), m("identifier.parse"), registryName);
-                    Object value = ident == null ? null : ReflectUtil.call(reg, m("registry.value"), ident);
+                    if (ident == null) return -1;
+                    // 26.2 DefaultedRegistry:getValue(未注册名) 返回默认值(air),须先 containsKey 存在性守卫
+                    if (!(ReflectUtil.call(reg, m("registry.containskey"), ident) instanceof Boolean b) || !b)
+                        return -1;
+                    Object value = ReflectUtil.call(reg, m("registry.value"), ident);
                     return value == null ? -1 : intOf(ReflectUtil.call(reg, m("registry.id"), value));
                 } catch (Exception e) { return -1; }
             }
             public String name(int id) {
                 try {
+                    if (id < 0) return null;
                     Object value = ReflectUtil.call(reg, m("registry.byid"), id);
                     if (value == null) return null;
+                    // 26.2 DefaultedRegistry:byId(未注册 id) 返回默认值(air),getId 回环校验真实注册
+                    if (intOf(ReflectUtil.call(reg, m("registry.id"), value)) != id) return null;
                     Object key = ReflectUtil.call(reg, m("registry.key"), value);
                     return key == null ? null : key.toString();
                 } catch (Exception e) { return null; }
@@ -413,7 +420,9 @@ public final class Vanilla262Provider implements MosaicProvider {
                     }
                     public String getString(String key) {
                         Object r = callSafe(tag, m("nbt.getstring"), key);
-                        Object v = unwrapOptional(r);          // 26.2:Optional<String>;旧版为 String
+                        if (r instanceof Optional<?> opt)   // 26.2:Optional<String>;空 Optional → ""
+                            return opt.isPresent() ? String.valueOf(opt.get()) : "";
+                        Object v = unwrapOptional(r);       // 旧版:直接 String
                         return v == null ? (r == null ? "" : String.valueOf(r)) : v.toString();
                     }
                     public int getInt(String key) {
