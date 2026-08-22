@@ -18,7 +18,6 @@ void mosaic_runtime_close(mosaic_runtime *rt);
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt);
 /* M4-3:当前已挂载 pack 数(status 观测用) */
 u32 mosaic_runtime_pack_count(const mosaic_runtime *rt);
-u32 mosaic_runtime_last_error(const mosaic_runtime *rt);
 u64 mosaic_runtime_function_count(const mosaic_runtime *rt);
 /* 当前工作集大小(已物化 ACTIVE 函数数)——M3-3 与驱逐调优用 */
 u32 mosaic_runtime_working_set_count(const mosaic_runtime *rt);

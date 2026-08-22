@@ -186,6 +186,7 @@ mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t 
 int mosaic_runtime_add_pack(mosaic_runtime *rt, const char *path, char *errbuf, size_t errlen) {
   if (!rt || !path) {
     if (errbuf && errlen) snprintf(errbuf, errlen, "invalid runtime");
+    if (rt) rt->last_err = MOSAIC_ERR_IO;   /* M4-3 复评 M1:!path 时 last_err 须非 0 */
     return -1;
   }
   /* 1) 独立打开 + 校验新 pack(open_many 单 pack 同款;fd/map 归属 nv,
@@ -193,7 +194,9 @@ int mosaic_runtime_add_pack(mosaic_runtime *rt, const char *path, char *errbuf, 
   struct pack_view nv;
   memset(&nv, 0, sizeof nv);
   nv.fd = -1;
-  if (open_pack_view(path, &nv, errbuf, errlen) != 0) return -1;
+  /* M4-3 复评 M1:open_pack_view 已写 errbuf(open/mmap failed),此处补
+     last_err,避免 JNI/agent 场景显示 err=0 误导 */
+  if (open_pack_view(path, &nv, errbuf, errlen) != 0) { rt->last_err = MOSAIC_ERR_IO; return -1; }
   if (validate_layout(rt, nv.map, nv.map_len, errbuf, errlen) != 0) goto fail;
   if (!event_tables_match(&rt->packs[0], &nv)) {
     set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "event table mismatch");
