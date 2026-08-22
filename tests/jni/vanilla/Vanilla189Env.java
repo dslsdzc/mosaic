@@ -52,4 +52,11 @@ public class Vanilla189Env implements VanillaEnv {
         // 构造签名核实 mcp918/src/minecraft/net/minecraft/inventory/InventoryBasic.java:19
         return ReflectUtil.callConstructor("net.minecraft.inventory.InventoryBasic", "test", false, 5);
     }
+    public Object commandObject() throws Exception {
+        // 1.8.9 命令对象:net.minecraft.command.CommandHandler 隐式无参构造(逆向核实
+        // mcp918/src/minecraft/net/minecraft/command/CommandHandler.java:类无声明构造器,
+        // 字段内联初始化 commandMap/commandSet,无 server 依赖)。
+        // ServerCommandManager 需 MinecraftServer 不可构造——契约只用 CommandHandler。
+        return ReflectUtil.callConstructor("net.minecraft.command.CommandHandler");
+    }
 }

@@ -48,4 +48,11 @@ public class Vanilla262Env implements VanillaEnv {
         // 构造签名核实 ~/minecraft26.2/decompiled/net/minecraft/world/SimpleContainer.java:18
         return ReflectUtil.callConstructor("net.minecraft.world.SimpleContainer", 5);
     }
+    public Object commandObject() throws Exception {
+        // 26.2 命令对象:com.mojang.brigadier.CommandDispatcher 无参构造(Brigadier 库在
+        // Mojang 运行库内)。构造核实:brigadier-1.3.10.jar javap CommandDispatcher()。
+        // 无服务器环境:register 仅操作本地树;execute 需 CommandSourceStack 不可用——
+        // 契约只断言 register 后的 registered() 列表(见 VanillaContractTest 注释)。
+        return ReflectUtil.callConstructor("com.mojang.brigadier.CommandDispatcher");
+    }
 }

@@ -1,3 +1,4 @@
+import mosaic.MosaicApiException;
 import mosaic.vanilla.*;
 
 /** 原版域契约测试:版本无关,在 26.2 与 1.8.9 环境分别运行(共享源码)。
@@ -6,6 +7,11 @@ public class VanillaContractTest {
     static int failures = 0;
     static void check(boolean cond, String msg) {
         if (!cond) { System.err.println("FAIL: " + msg); failures++; }
+    }
+    static boolean contains(String[] arr, String v) {
+        if (arr == null) return false;
+        for (String s : arr) if (v.equals(s)) return true;
+        return false;
     }
 
     public static void main(String[] args) throws Exception {
@@ -97,6 +103,65 @@ public class VanillaContractTest {
         check("".equals(player.name()), "playerOf(null) name '' (got '" + player.name() + "')");
         check(player.gameMode() == -1, "playerOf(null) gameMode -1 (got " + player.gameMode() + ")");
         check(!player.online(), "playerOf(null) online false");
+
+        // ---- M7-B:Command 真实路径(双代均可构造,if-available 守卫作防御:
+        // 26.2 CommandDispatcher 无参构造、1.8.9 CommandHandler 隐式无参构造,
+        // 逆向核实见 task-m7-b-report。无服务器环境 register 仅注册到本地树,
+        // execute 需 CommandSourceStack/ICommandSender 不可用 → 只断言 registered()
+        // 列表(register 后含注册名 + 列表增长),不测 execute;若某代构造失败,
+        // 真实路径断言跳过,null 语义断言仍双代必跑) ----
+        boolean cmdAvailable = false;
+        Object cmdObj = null;
+        try { cmdObj = env.commandObject(); cmdAvailable = true; }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " commandObject unavailable, "
+                    + "command real-path assertions skipped: " + ex);
+        }
+        if (cmdAvailable) {
+            MosaicCommand cmd = p.commandOf(cmdObj);
+            check(cmd != null, "command handle (real path)");
+            // 规范 §5 Command 域双接口(MosaicCommand + MosaicCommandTree),句柄两者皆实现
+            check(cmd instanceof MosaicCommandTree, "command handle implements MosaicCommandTree");
+            MosaicCommandTree tree = (MosaicCommandTree) cmd;
+            String[] before = tree.registered();
+            check(before != null, "registered() non-null");
+            String cname = "m7contract";
+            check(!contains(before, cname), "registered() not contains '" + cname + "' before register");
+            cmd.register(cname, a -> 0);
+            String[] after = tree.registered();
+            check(contains(after, cname), "registered() contains '" + cname + "' after register");
+            check(after.length > before.length,
+                    "registered() grows after register (" + before.length + " -> " + after.length + ")");
+            // 重名守卫(接口契约:MosaicCommand.register 重名抛 MosaicApiException)
+            boolean dupThrew = false;
+            try { cmd.register(cname, a -> 1); }
+            catch (MosaicApiException ex) { dupThrew = true; }
+            check(dupThrew, "duplicate register throws MosaicApiException");
+        }
+
+        // Command null 语义(双代必跑,兜底值双代同值:registered 空/register no-op)
+        MosaicCommand cmdNull = p.commandOf(null);
+        check(cmdNull != null, "commandOf(null) null-safe handle");
+        check(cmdNull instanceof MosaicCommandTree, "commandOf(null) implements MosaicCommandTree");
+        check(((MosaicCommandTree) cmdNull).registered() != null
+                        && ((MosaicCommandTree) cmdNull).registered().length == 0,
+                "commandOf(null) registered() empty");
+        try { cmdNull.register("ignored", a -> 0); check(true, "commandOf(null) register no-throw"); }
+        catch (Exception ex) { check(false, "commandOf(null) register no-throw: " + ex); }
+
+        // ---- M7-B:Network null 语义(双代必跑;契约环境无真实 Connection/
+        // NetHandlerPlayServer,与 Entity 先例同款——null 语义为主,真实路径待
+        // 运行中服务端环境;兜底值双代同值) ----
+        MosaicNetwork net = p.networkOf(null);
+        check(net != null, "networkOf(null) null-safe handle");
+        try { net.sendPacket(0, new byte[0]); check(true, "networkOf(null) sendPacket no-throw"); }
+        catch (Exception ex) { check(false, "networkOf(null) sendPacket no-throw: " + ex); }
+        MosaicPacketListener pl = net.listener();
+        check(pl != null, "networkOf(null) listener non-null");
+        AutoCloseable sub = pl.onPacket("test_packet", (pid, data) -> { });
+        check(sub != null, "onPacket non-null subscription");
+        try { sub.close(); check(true, "subscription close no-throw"); }
+        catch (Exception ex) { check(false, "subscription close no-throw: " + ex); }
 
         if (failures == 0) System.out.println("VANILLA CONTRACT PASSED (" + p.mcVersion() + ")");
         System.exit(failures == 0 ? 0 : 1);

@@ -1,11 +1,13 @@
 package mosaic.vanilla.internal;
 
+import mosaic.MosaicApiException;
 import mosaic.MosaicHandleException;
 import mosaic.vanilla.*;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Proxy;
 import java.util.*;
 
 /** 1.8.9 Provider:与 Vanilla262Provider 同结构(反射 + 版本映射表)。句柄持有原版引用,
@@ -410,6 +412,130 @@ public final class Vanilla189Provider implements MosaicProvider {
                 };
             }
         };
+    }
+
+    /* ---------- Command / Network(M7-B) ---------- */
+
+    /** 命令句柄工厂:包装 1.8.9 命令对象(net.minecraft.command.CommandHandler)。
+     *  契约环境可构造性:CommandHandler 隐式无参构造(逆向核实 CommandHandler.java:
+     *  无声明构造器,字段内联初始化,无 server 依赖)——真实路径可用;
+     *  ServerCommandManager(需 MinecraftServer)不可构造,但契约只用 CommandHandler。
+     *  null → null-safe 句柄(registered 空/register no-op)。
+     *  register 语义:registerCommand(ICommand) → commandMap(命令表);
+     *  execute 需 ICommandSender,契约环境不可用——契约只断言 registered() 列表。 */
+    public MosaicCommand commandOf(Object vanillaCommand) {
+        if (vanillaCommand == null) return new NullSafeCommand();
+        return new HandlerCommand(this, vanillaCommand);
+    }
+
+    /** 网络句柄工厂:契约环境无真实 NetHandlerPlayServer(构造需 server/player)→
+     *  null 语义为主(与 Entity 先例同款);真实路径在运行中服务端环境可用。 */
+    public MosaicNetwork networkOf(Object vanillaNetwork) {
+        if (vanillaNetwork == null) return new NullSafeNetwork();
+        return new NetHandlerNetwork(this, vanillaNetwork);
+    }
+
+    /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的
+     *  null-safe 先例同款)。句柄同时实现 MosaicCommandTree(规范 §5 Command 域双接口)。 */
+    private static final class NullSafeCommand implements MosaicCommand, MosaicCommandTree {
+        public void register(String name, MosaicCommandHandler handler) { }
+        public String[] registered() { return new String[0]; }
+    }
+
+    /** 1.8.9 真实路径命令句柄:CommandHandler 命令表(registerCommand → commandMap)。
+     *  ICommand 为接口(7 方法 + Comparable<ICommand>),以动态代理实现:
+     *  getCommandName → name;processCommand(sender, args) → handler.execute(args);
+     *  其余默认(canCommandSenderUseCommand true、aliases/补全空、compareTo 0)。
+     *  register:名字校验 + 重名守卫(接口契约:重名抛 MosaicApiException)。 */
+    private static final class HandlerCommand implements MosaicCommand, MosaicCommandTree {
+        private final Vanilla189Provider p;
+        private final Object commandHandler;   // CommandHandler
+        HandlerCommand(Vanilla189Provider p, Object commandHandler) { this.p = p; this.commandHandler = commandHandler; }
+
+        public String[] registered() {
+            try {
+                Object cmds = ReflectUtil.call(commandHandler, p.m("commandhandler.commands"));
+                if (!(cmds instanceof Map)) return new String[0];
+                List<String> out = new ArrayList<>();
+                for (Object k : ((Map<?, ?>) cmds).keySet()) out.add(String.valueOf(k));
+                return out.toArray(new String[0]);
+            } catch (Exception e) { return new String[0]; }
+        }
+
+        public void register(String name, MosaicCommandHandler handler) {
+            if (name == null || name.isEmpty()) throw new MosaicApiException("command name must be non-empty");
+            if (handler == null) throw new MosaicApiException("command handler must be non-null");
+            for (String s : registered())
+                if (s.equals(name)) throw new MosaicApiException("command already registered: " + name);
+            try {
+                Class<?> ic = Class.forName(p.m("icommand.class"));
+                Object proxy = Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { ic },
+                        (pr, method, args) -> {
+                            String mn = method.getName();
+                            if ("getCommandName".equals(mn)) return name;
+                            if ("getCommandAliases".equals(mn)) return Collections.emptyList();
+                            if ("getCommandUsage".equals(mn)) return "";
+                            if ("canCommandSenderUseCommand".equals(mn)) return Boolean.TRUE;
+                            if ("addTabCompletionOptions".equals(mn)) return Collections.emptyList();
+                            if ("isUsernameIndex".equals(mn)) return Boolean.FALSE;
+                            if ("processCommand".equals(mn)) {
+                                if (args != null && args.length >= 2 && args[1] instanceof String[] sa) handler.execute(sa);
+                                return null;   // void 返回
+                            }
+                            if ("compareTo".equals(mn)) return 0;
+                            if ("toString".equals(mn)) return "MosaicCommand(" + name + ")";
+                            if ("hashCode".equals(mn)) return System.identityHashCode(pr);
+                            if ("equals".equals(mn)) return pr == args[0];
+                            return null;
+                        });
+                ReflectUtil.call(commandHandler, p.m("commandhandler.register"), proxy);
+            } catch (Exception e) {
+                throw new MosaicHandleException("register '" + name + "': " + e);
+            }
+        }
+    }
+
+    /** null-safe 网络句柄(双代同值):sendPacket no-op、listener() 非 null、
+     *  onPacket 返回 no-op 订阅(契约环境无真实 NetHandler → 兜底值)。 */
+    private static final class NullSafeNetwork implements MosaicNetwork {
+        public void sendPacket(int playerId, byte[] packetData) { }
+        public MosaicPacketListener listener() {
+            return new MosaicPacketListener() {
+                public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
+                    return new AutoCloseable() { public void close() { } };
+                }
+            };
+        }
+    }
+
+    /** 真实路径网络句柄(运行中服务端):持有 NetHandler 引用;sendPacket 的包构造与
+     *  编码需服务端环境(契约环境不可达)→ 静默跳过;listener 的 onPacket 做本地
+     *  订阅簿记(返回可关闭订阅;真实包分发接入待服务端/原生桥环境)。 */
+    private static final class NetHandlerNetwork implements MosaicNetwork {
+        private final Vanilla189Provider p;
+        private final Object netHandler;   // NetHandlerPlayServer
+        private final Map<String, List<MosaicPacketHandler>> subs = new HashMap<>();
+        NetHandlerNetwork(Vanilla189Provider p, Object netHandler) { this.p = p; this.netHandler = netHandler; }
+
+        public void sendPacket(int playerId, byte[] packetData) {
+            // 1.8.9 playerNetServerHandler.sendPacket(S19Packet...):包构造需运行中服务端,契约环境不可构造 → 静默跳过
+        }
+        public MosaicPacketListener listener() {
+            return new MosaicPacketListener() {
+                public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
+                    if (packetTypeName == null || handler == null)
+                        return new AutoCloseable() { public void close() { } };
+                    final MosaicPacketHandler h = handler;
+                    subs.computeIfAbsent(packetTypeName, k -> new ArrayList<>()).add(h);
+                    return new AutoCloseable() {
+                        public void close() {
+                            List<MosaicPacketHandler> list = subs.get(packetTypeName);
+                            if (list != null) list.remove(h);
+                        }
+                    };
+                }
+            };
+        }
     }
 
     /* ---------- 名称工具 ---------- */

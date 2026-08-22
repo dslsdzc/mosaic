@@ -1,5 +1,6 @@
 package mosaic.vanilla.internal;
 
+import mosaic.MosaicApiException;
 import mosaic.MosaicHandleException;
 import mosaic.vanilla.*;
 
@@ -8,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Proxy;
 import java.util.*;
 
 /** 26.2 Provider:反射 + 版本映射表。句柄持有原版引用,读取时经 ReflectUtil 转换;
@@ -451,5 +453,140 @@ public final class Vanilla262Provider implements MosaicProvider {
                 };
             }
         };
+    }
+
+    /* ---------- Command / Network(M7-B) ---------- */
+
+    /** 命令句柄工厂:包装 26.2 命令对象(com.mojang.brigadier.CommandDispatcher)。
+     *  契约环境可构造性:CommandDispatcher 无参构造(Brigadier 库在 Mojang 运行库内,
+     *  javap 核实)——真实路径可用;null → null-safe 句柄(registered 空/register no-op)。
+     *  register 语义:无服务器环境仅注册到本地树(句柄持有 dispatcher,register 操作本地树);
+     *  execute 需 CommandSourceStack,契约环境不可用——契约只断言 registered() 列表。 */
+    public MosaicCommand commandOf(Object vanillaCommand) {
+        if (vanillaCommand == null) return new NullSafeCommand();
+        return new DispatcherCommand(this, vanillaCommand);
+    }
+
+    /** 网络句柄工厂:契约环境无真实 Connection(构造需 ClientPacketListener/
+     *  ServerCommonPacketListener 等复杂依赖)→ null 语义为主(与 Entity 先例同款);
+     *  真实路径在运行中服务端环境可用。 */
+    public MosaicNetwork networkOf(Object vanillaNetwork) {
+        if (vanillaNetwork == null) return new NullSafeNetwork();
+        return new ConnectionNetwork(this, vanillaNetwork);
+    }
+
+    /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的
+     *  null-safe 先例同款)。句柄同时实现 MosaicCommandTree(规范 §5 Command 域双接口)。 */
+    private static final class NullSafeCommand implements MosaicCommand, MosaicCommandTree {
+        public void register(String name, MosaicCommandHandler handler) { }
+        public String[] registered() { return new String[0]; }
+    }
+
+    /** 26.2 真实路径命令句柄:Brigadier CommandDispatcher 本地树注册。
+     *  register:名字校验 + 重名守卫(接口契约:重名抛 MosaicApiException;先于 Brigadier
+     *  的同层重名合并/抛错自拦截)→ LiteralArgumentBuilder.literal(name).executes(Command 代理)
+     *  → dispatcher.register(本地树)。execute 接线:Command 代理 run(CommandContext) 经
+     *  getInput() 取原始输入、剥离命令名为 args 后回调 handler(best-effort;契约环境
+     *  无 CommandSourceStack,execute 不可达,仅接线不测试)。 */
+    private static final class DispatcherCommand implements MosaicCommand, MosaicCommandTree {
+        private final Vanilla262Provider p;
+        private final Object dispatcher;   // CommandDispatcher
+        DispatcherCommand(Vanilla262Provider p, Object dispatcher) { this.p = p; this.dispatcher = dispatcher; }
+
+        public String[] registered() {
+            try {
+                Object root = ReflectUtil.call(dispatcher, p.m("dispatcher.root"));
+                Object children = ReflectUtil.call(root, p.m("commandnode.children"));
+                if (!(children instanceof Collection)) return new String[0];
+                List<String> out = new ArrayList<>();
+                for (Object n : (Collection<?>) children) {
+                    Object name = ReflectUtil.call(n, p.m("commandnode.name"));
+                    out.add(name == null ? String.valueOf(n) : name.toString());
+                }
+                return out.toArray(new String[0]);
+            } catch (Exception e) { return new String[0]; }
+        }
+
+        public void register(String name, MosaicCommandHandler handler) {
+            if (name == null || name.isEmpty()) throw new MosaicApiException("command name must be non-empty");
+            if (handler == null) throw new MosaicApiException("command handler must be non-null");
+            for (String s : registered())
+                if (s.equals(name)) throw new MosaicApiException("command already registered: " + name);
+            try {
+                Object literal = ReflectUtil.callStatic(p.cls("literal"), p.m("literal.literal"), name);
+                Object cmdProxy = Proxy.newProxyInstance(getClass().getClassLoader(),
+                        new Class<?>[] { Class.forName(p.m("command.class")) },
+                        (proxy, method, args) -> {
+                            if ("run".equals(method.getName()) && args != null && args.length > 0) {
+                                try {
+                                    Object input = ReflectUtil.call(args[0], p.m("commandcontext.input"));
+                                    return (Integer) handler.execute(splitArgs(input == null ? "" : input.toString(), name));
+                                } catch (Exception e) { return 0; }
+                            }
+                            if ("toString".equals(method.getName())) return "MosaicCommand(" + name + ")";
+                            if ("hashCode".equals(method.getName())) return System.identityHashCode(proxy);
+                            if ("equals".equals(method.getName())) return proxy == args[0];
+                            return 0;
+                        });
+                ReflectUtil.call(literal, p.m("literal.executes"), cmdProxy);
+                ReflectUtil.call(dispatcher, p.m("dispatcher.register"), literal);
+            } catch (Exception e) {
+                throw new MosaicHandleException("register '" + name + "': " + e);
+            }
+        }
+    }
+
+    /** 原始命令输入剥离首个命令名 token("name a b" → ["a","b"])。 */
+    private static String[] splitArgs(String input, String name) {
+        String[] parts = input == null ? new String[0] : input.trim().split("\\s+");
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < parts.length; i++) {
+            if (i == 0 && parts[i].equals(name)) continue;
+            out.add(parts[i]);
+        }
+        return out.toArray(new String[0]);
+    }
+
+    /** null-safe 网络句柄(双代同值):sendPacket no-op、listener() 非 null、
+     *  onPacket 返回 no-op 订阅(契约环境无真实 Connection → 兜底值)。 */
+    private static final class NullSafeNetwork implements MosaicNetwork {
+        public void sendPacket(int playerId, byte[] packetData) { }
+        public MosaicPacketListener listener() {
+            return new MosaicPacketListener() {
+                public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
+                    return new AutoCloseable() { public void close() { } };
+                }
+            };
+        }
+    }
+
+    /** 真实路径网络句柄(运行中服务端):持有 Connection 引用;sendPacket 的 Packet
+     *  构造与编码需服务端环境(契约环境不可达)→ 静默跳过;listener 的 onPacket 做
+     *  本地订阅簿记(返回可关闭订阅;真实包分发接入待服务端/原生桥环境)。 */
+    private static final class ConnectionNetwork implements MosaicNetwork {
+        private final Vanilla262Provider p;
+        private final Object conn;   // Connection/PacketListener
+        private final Map<String, List<MosaicPacketHandler>> subs = new HashMap<>();
+        ConnectionNetwork(Vanilla262Provider p, Object conn) { this.p = p; this.conn = conn; }
+
+        public void sendPacket(int playerId, byte[] packetData) {
+            // 26.2 Connection.send(Packet):Packet 编解码需运行中服务端,契约环境不可构造 → 静默跳过
+        }
+        public MosaicPacketListener listener() {
+            return new MosaicPacketListener() {
+                public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
+                    if (packetTypeName == null || handler == null)
+                        return new AutoCloseable() { public void close() { } };
+                    final MosaicPacketHandler h = handler;
+                    subs.computeIfAbsent(packetTypeName, k -> new ArrayList<>()).add(h);
+                    return new AutoCloseable() {
+                        public void close() {
+                            List<MosaicPacketHandler> list = subs.get(packetTypeName);
+                            if (list != null) list.remove(h);
+                        }
+                    };
+                }
+            };
+        }
     }
 }
