@@ -252,7 +252,13 @@ JNIEXPORT void JNICALL Java_mosaic_Bridge_packAddItem(JNIEnv *env, jclass c, jlo
   const char *n = name ? (*env)->GetStringUTFChars(env, name, NULL) : NULL;
   const char *t = tags ? (*env)->GetStringUTFChars(env, tags, NULL) : NULL;
   const char *i = icon ? (*env)->GetStringUTFChars(env, icon, NULL) : NULL;
-  if ((name && !n) || (tags && !t) || (icon && !i)) { /* OOM */ if (n)(*env)->ReleaseStringUTFChars(env,name,n); return; }
+  /* OOM 失败路径必须释放全部已获取字符串(Task 5 评审修复:第 3 个
+     GetStringUTFChars 失败时 t 已获取——原先只释放 n,t 泄漏) */
+  if ((name && !n) || (tags && !t) || (icon && !i)) {
+    if (n) (*env)->ReleaseStringUTFChars(env, name, n);
+    if (t) (*env)->ReleaseStringUTFChars(env, tags, t);
+    return;
+  }
   mosaic_pack_builder_add_item(b, (u64)provider, n, t, (u32)category, i, (u32)flags);
   if (n) (*env)->ReleaseStringUTFChars(env, name, n);
   if (t) (*env)->ReleaseStringUTFChars(env, tags, t);

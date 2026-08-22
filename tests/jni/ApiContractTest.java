@@ -59,12 +59,68 @@ public class ApiContractTest {
         check(cat.find("player_join") != null, "catalog player_join");
         check(cat.find("zzz") == null, "catalog miss");
 
-        // 工作集驱逐
+        // 工作集驱逐(Task 5 评审加固:原 ws.count() <= 2 是空断言)
         MosaicWorkingSet ws = rt.workingSet();
-        check(ws.count() == 2, "ws count 2");
+        check(ws.count() == 2, "ws count 2 before evict, got " + ws.count());
         int evicted = ws.evictIdle(0);
-        check(evicted >= 0, "evictIdle ok");
-        check(ws.count() <= 2, "ws shrinks after evict");
+        /* 窗口 0 → 任何 last_use 都满足 (last_use + 0) <= now;f0b/f1 均
+           refs==0(无租约)→ 全墓碑。实测:evicted==2、count==0。 */
+        check(evicted == 2, "evictIdle(0) tombstones both idle fns, got " + evicted);
+        check(ws.count() == 0, "ws empty after evict, got " + ws.count());
+
+        // 模块加载器
+        MosaicModuleLoader loader = rt.moduleLoader();
+        MosaicModule mod = loader.load(1L);
+        check(mod != null && mod.moduleId() == 1L, "module load");
+        check(mod.name() != null && mod.name().length() > 0, "module name");
+        loader.unload(1L);
+
+        // 依赖解析(无依赖模块 → 闭包 = 自身)
+        MosaicDependencyResolver dr = rt.dependencyResolver();
+        long[] closure = dr.resolve(1L, null);
+        check(closure.length >= 1, "dep resolve closure non-empty");
+
+        // 事件 Java 订阅
+        final int[] javaCalls = {0};
+        MosaicEventDispatcher ed = rt.eventDispatcher();
+        MosaicEventSubscription sub = ed.subscribe(rt.eventId("player_join"), (e, payload) -> javaCalls[0]++);
+        ed.dispatch(rt.eventId("player_join"), new byte[4]);
+        check(javaCalls[0] == 1, "java subscription called, got " + javaCalls[0]);
+        sub.close();
+        ed.dispatch(rt.eventId("player_join"), new byte[4]);
+        check(javaCalls[0] == 1, "subscription closed stops calls");
+
+        // 调度器(纯 Java)
+        MosaicScheduler sched = rt.scheduler();
+        final int[] done = {0};
+        sched.submit(new MosaicTask() {
+            public long id() { return 1; }
+            public int[] dependencyIds() { return new int[0]; }
+            public int priority() { return 0; }
+            public int affinity() { return -1; }
+            public void run() { done[0]++; }
+            public MosaicCheckpoint checkpoint() { return null; }
+        });
+        sched.waitAll();
+        check(done[0] == 1, "scheduler task ran");
+
+        // 租约
+        MosaicResourceManager rm = rt.resources();
+        MosaicResourceLease lease = rm.acquire(0x100000000L);
+        check(lease != null, "lease acquired");
+        check(rt.workingSetCount() >= 1, "lease holds fn in ws");
+        rm.release(lease);
+
+        // 服务注册
+        MosaicServiceRegistry sr = rt.services();
+        sr.register(Runnable.class, () -> {});
+        check(sr.get(Runnable.class) != null, "service get");
+        check(sr.optional(String.class) == null, "service optional miss");
+
+        // 查询(创造模式)
+        MosaicQueryBuilder qb = rt.query();
+        MosaicQuery q = qb.byCategory(0);
+        check(q != null, "query by category");
 
         rt.close();
 

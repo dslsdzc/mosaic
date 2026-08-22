@@ -7,7 +7,13 @@ import mosaic.runtime.MosaicModuleLoader;
 import mosaic.runtime.MosaicResourceHandle;
 
 /** 模块装载实现:load/unload 直通 mod_load/mod_unload;模块元数据经模块
- *  描述符(modDescField/modDescString)读取。 */
+ *  描述符(modDescField/modDescString)读取。
+ *
+ *  ⚠️ 8 文档注记(Task 5):moduleCount/moduleDescriptor 是基础 pack 视图
+ *  (find_module_ex,仅扫描 rt->packs 基础 pack 头/记录);而 mod_load 走
+ *  活跃视图(find_module_active,已 commit 补丁的模块记录优先)。补丁
+ *  commit 后两视图的版本/so_path 可能不一致——索引/描述符返回基础 pack
+ *  元数据,实际 dlopen 的 .so 以补丁为准。 */
 public final class ModuleLoaderImpl implements MosaicModuleLoader {
     private final RuntimeImpl rt;
 
