@@ -1,6 +1,21 @@
 # Mosaic
 
-面向 Minecraft 的 Native、事件驱动、函数级惰性模块运行时(M1:核心循环原型)。
+面向 Minecraft 的 **Native、事件驱动、函数级惰性模块运行时 —— 一个自研的模组加载器**。
+
+> 巨大的 Mod Universe + 极小的 Runtime Working Set:千万级函数保存在紧凑的 mmap 静态索引中,只在逻辑真正被触发时自动物化对应函数;世界运行中可安装新 Mod、函数级滚动更新,全程零重启。
+
+**Mosaic 自己就是加载器**:不基于 Paper/Fabric/Forge 任何现有加载器。核心为纯 C 运行时(C11,零外部依赖),经自研 JVM Bridge 与自研 javaagent 注入引擎接入 vanilla Minecraft 服务端(jar 零修改)。
+
+## 里程碑状态
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| **M1** 核心循环 | mmap 冷存储(48B/64B 记录)、紧凑索引、工作集/状态机(物化/墓碑/恢复)、触发索引派发、所有权/驱逐 | ✅ 10M 冷函数 RSS 增量 0.12MB、全循环 ~200μs、热路径 ~1.00× |
+| **M1.5** 分片 | 多 pack 合并索引(open_many)、模块范围表两级二分、按 pack mremap | ✅ 1 亿函数 = 100 片 × 100 万,构建峰值 83.9MB/片,打开 RSS 61.65MB |
+| **M2** 事务/调度 | 依赖图闭包、事务 API(prepare/validate/commit/rollback=demote/abort)、函数级 generation 路由、状态迁移钩子(state_transform)、混合版本共存、DAG 调度器(线程池/优先级/亲和性/取消) | ✅ 跨两次 commit 状态链 3→30→32→320→322 逐步可复核;1M 派发 1109.7s→4.0s(ws 键位混合) |
+| **M3** 合成世界 | 事件类型 API v1(205 事件目录 + 载荷签名 + 频率档)、合成世界模拟器、世界场景门禁 | ✅ 生命周期全循环 58.7μs;稀疏订阅工作集 28,149/100,000(≪ 总数) |
+| **M4** 真实 MC | 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)、vanilla 1.20.1 集成、世界内动态加载 | ✅ 服务端 tick→注入→bridge→C 派发活循环;运行中 install 新 pack 下个 tick 即生效,零重启 |
+| **M5** 兼容层 | Fabric/NeoForge mod 兼容 Provider | ⏳ 暂缓 |
 
 ## 设计
 
@@ -10,32 +25,49 @@
 ## 构建与验证
 
 ```bash
-./ci/gates.sh          # Release 构建 + 全部测试 + 10M 基准门禁
+./ci/gates.sh          # Release 构建 + 全部测试 + 10M 基准门禁 + 100M 分片门禁 + 世界场景门禁
+bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 21)
 ```
 
-## M1 验收硬指标(CI 门禁)
+## 核心指标(CI 门禁,实测为多轮稳定代表值)
 
 | 门禁 | 指标 | 实测 | 阈值 |
 |---|---|---|---|
 | S1 冷规模 | 10M 冷函数 RSS 增量 | 0.12 MB | ≤ 80 MB |
-| S3 全循环 | 触发→物化→执行→墓碑→恢复→执行 | ~0.3 ms | ≤ 500 μs |
+| S3 全循环 | 触发→物化→执行→墓碑→恢复→执行 | ~0.2 ms | ≤ 500 μs |
 | S4 热路径 | 分派/直调比 | ~1.00 | ≤ 1.10 |
-| S2 冷启动 | 1k 函数物化延迟 | — | 诊断性,非门禁 |
+| S5 分片 | 100 片 × 100 万构建峰值/打开 RSS | 83.9 MB / 61.65 MB | ≤ 300 MB / ≤ 80 MB |
+| S-W1 世界生命周期 | 加入→物化→墓碑→重进恢复 | 58.7 μs | ≤ 500 μs |
+| S-W2b 稀疏工作集 | 2% 高频订阅下 ws/总数 | 0.281 | ≪ 1 |
 
-实测值为代表值(中位数决策,多轮稳定);偶发机器负载波动被中位数设计压制,单轮偏差不判失败。
+测试:16 个 C 套件(单元/属性/事务/线程/描述符/世界)+ JNI 23 断言 + 真实 1.20.1 服务端端到端;ASan/UBSan/TSan 干净。
 
 ## 布局
 
 ```
-include/mosaic/  稳定 API 头(base/pack/runtime/module/function/event/ownership/eviction)
-src/             pack_reader·index·working_set·lifecycle(L0-L3)·trigger·ownership·eviction(L4)
-src/pack_builder.c   离线 pack 构建器
+include/mosaic/  稳定 C API 头(base/pack/runtime/module/function/event/ownership/eviction/deps/tx/sched/world/descriptor/events)
+src/             pack_builder·runtime·index·working_set·lifecycle·trigger·ownership·eviction·deps·tx·genroute·sched·world·descriptor·events
 src/jni/         JVM Bridge(JNI 双向通道,M4-1)
 java/mosaic/     Java 稳定 API 面(mosaic.Bridge)
-bench/           合成宇宙 + S1-S4 基准 + world 场景 + gen_test_pack
+agent/           自研注入引擎(javaagent + ClassFileTransformer + hooks,M4-2)
+bench/           合成宇宙 + S1-S5 基准 + 世界场景 + pack 生成器
 tests/           mini_test 单元/属性测试
-ci/gates.sh      验收门禁
+ci/              gates.sh·setup_mc_server.sh·build_mc_agent.sh·run_jni_test.sh
 ```
+
+## 架构
+
+```
+Minecraft 服务端 (vanilla 1.20.1,jar 零修改)
+    ↕ 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)
+JVM Bridge (JNI,载荷小端 byte[] ↔ events.h 结构体)
+    ↕ Stable Runtime ABI
+C Runtime Core (mmap 冷存储 / 紧凑索引 / 工作集 / 状态机 / 触发索引 / 事务 / 调度)
+    ↕ 模块 ABI v2 (dlopen,code 表 + state_transform 表)
+Mod Universe (pack 文件:记录 48B/64B/16B,分片可挂载)
+```
+
+事件类型 API:`include/mosaic/events.h` 205 事件目录(域分类 + 载荷签名 + 频率档),`MOSAIC_MAX_EVENTS 4096`。
 
 ## JVM Bridge(M4-1)
 
@@ -43,7 +75,8 @@ ci/gates.sh      验收门禁
 零 MC 依赖、纯本地可测。Java 侧 API 面 = `mosaic.Bridge`
 (`java/mosaic/Bridge.java`):`runtimeOpen/Close`(pack 组打开/关闭)、
 `functionCount`、`eventId`(名 → id,未注册 -1)、`eventDispatch`
-(byte[] 载荷 → 执行数)、`workingSetCount`、`lastError`。载荷约定:
+(byte[] 载荷 → 执行数)、`workingSetCount`、`lastError`、
+`runtimeAddPack`(世界内挂载)。载荷约定:
 `byte[]` 与 `include/mosaic/events.h` 载荷结构体**小端一致**,长度 =
 结构体大小(例:方块事件 20B = player_id/x/y/z/block_type;玩家事件 4B)。
 
@@ -140,3 +173,10 @@ tick 立即执行(世界内加载生效);重叠安装 world.pack(模块 1 与已
 `runtimeAddPack` 成功(函数数 3→5、派发 2→3)、重叠失败 -1 + `lastError`
 非 0、失败后函数数不变;`test_shards` 新增 4 个用例(挂载/重叠回滚/事件
 不一致/重复挂载)。
+
+## 已知边界
+
+- 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
+- 游戏内聊天命令暂未挂钩(仅控制台/RCON 命令漏斗)。
+- `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
+- M4 阶段 API 尚未覆盖原版能力域(entity/block/item/registry 等)——见 `docs/` 与规划中的 API 大类清单。
