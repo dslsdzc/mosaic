@@ -163,6 +163,10 @@ set_target_properties(world_bench PROPERTIES
 add_executable(gen_test_pack bench/gen_test_pack.c)
 target_link_libraries(gen_test_pack mosaic_core)
 
+# M4-2:1.20.1 服务端世界 pack 生成器(1 模块 13 函数、5 事件、13 触发器)
+add_executable(gen_world_pack bench/gen_world_pack.c)
+target_link_libraries(gen_world_pack mosaic_core)
+
 # ---- M4-1:JVM Bridge(JNI 双向通道骨架,零 MC 依赖) ----
 # JDK 自动探测:JAVA_HOME 未设时 FindJNI 走 /usr/lib/jvm/*(含 default 链接);
 # 输出 build/lib/libmosaic_jni.so(System.loadLibrary("mosaic_jni") 查找点)

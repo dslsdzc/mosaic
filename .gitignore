@@ -18,3 +18,7 @@ bench/*.pack
 build-asan/
 build-dbg/
 build-tsan/
+
+# M4-2: 下载的 vanilla 服务端 jar + ASM 库 + 生成的 world pack(可再生)
+mc-server/
+lib/
