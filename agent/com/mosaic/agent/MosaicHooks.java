@@ -20,8 +20,10 @@ import java.lang.reflect.Method;
  *       字段 player -> d(protected final)、level -> c(protected)
  *   - net.minecraft.commands.Commands                -> dt
  *       performPrefixedCommand(CommandSourceStack,String) -> a  (desc (Lds;Ljava/lang/String;)I;
- *       控制台/聊天命令漏斗;mojmap 的 performCommand(CommandSourceStack,String)
- *       已被 ProGuard 内联,运行时不存在)
+ *       控制台/RCON 命令漏斗;mojmap 的 performCommand(CommandSourceStack,String)
+ *       已被 ProGuard 内联,运行时不存在。游戏内聊天命令不走此方法(独立
+ *       反汇编证实走 dt.a(ParseResults,String) = performCommand(ParseResults,
+ *       String) 路径),暂未 hook,留待后续)
  *   - net.minecraft.server.MinecraftServer           -> 未混淆
  *       tickServer(BooleanSupplier)                  -> a      (desc (Ljava/util/function/BooleanSupplier;)V)
  *       getTickCount()                               -> ag
@@ -140,10 +142,12 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("onBlockBreak", t); }
     }
 
-    /* ---- 注入 hook:命令(控制台/聊天漏斗入口;"/mosaic" 前缀消费,返回 true) ---- */
+    /* ---- 注入 hook:命令(控制台/RCON 漏斗入口;"/mosaic" 前缀消费,返回 true;
+       游戏内聊天命令不走此点(见头注释),暂未 hook) ---- */
     public static boolean onCommand(Object src, String cmd) {
         try {
-            if (cmd == null || !cmd.startsWith("/mosaic")) return false;
+            /* "/mosaic" 后必须跟空白或结尾,避免误消费 "/mosaictest" 等前缀命令 */
+            if (cmd == null || (!cmd.equals("/mosaic") && !cmd.startsWith("/mosaic "))) return false;
             handleMosaic(cmd);
             return true;
         } catch (Throwable t) {

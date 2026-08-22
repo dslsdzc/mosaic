@@ -28,7 +28,7 @@ import org.objectweb.asm.Opcodes;
  *       a(Lgu;)Z      = destroyBlock      → 方法入口注入 onBlockBreak(gm,pos)
  *                                          (入口注入 = 方块尚未破坏,取破坏前状态)
  *   - dt = net.minecraft.commands.Commands
- *       a(Lds;Ljava/lang/String;)I = performPrefixedCommand(控制台/聊天命令漏斗)
+ *       a(Lds;Ljava/lang/String;)I = performPrefixedCommand(控制台/RCON 命令漏斗)
  *                                          → 方法入口注入 onCommand;返回 true 则
  *                                            ICONST_1 IRETURN 消费命令
  *   - net/minecraft/server/MinecraftServer

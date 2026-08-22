@@ -15,6 +15,25 @@ cmake --build build -j --target mosaic_jni >/dev/null
 rm -rf build/agentclasses build/asmclasses build/lib/mosaic-agent.jar
 mkdir -p build/agentclasses build/asmclasses build/lib
 
+# 一致性检查:agent/mosaic/Bridge.java(M4-1 Bridge 的内嵌版)与
+# java/mosaic/Bridge.java 双份并存,native 方法声明必须一致(稳定契约),
+# 不一致立即报错退出。
+echo "[agent] consistency check: Bridge native declarations (agent/mosaic vs java/mosaic)..."
+for f in agent/mosaic/Bridge.java java/mosaic/Bridge.java; do
+    if ! grep -Eq '^[[:space:]]*public static native[[:space:]]' "$f"; then
+        echo "[agent] ERROR: no native declarations found in $f" >&2
+        exit 1
+    fi
+done
+grep -Eo 'public static native[^;]*;' agent/mosaic/Bridge.java | sed 's/^[[:space:]]*//' | sort > build/bridge_agent_native.txt
+grep -Eo 'public static native[^;]*;' java/mosaic/Bridge.java | sed 's/^[[:space:]]*//' | sort > build/bridge_java_native.txt
+if ! diff -q build/bridge_agent_native.txt build/bridge_java_native.txt >/dev/null; then
+    echo "[agent] ERROR: Bridge native 声明不一致 (agent/mosaic/Bridge.java vs java/mosaic/Bridge.java):" >&2
+    diff build/bridge_agent_native.txt build/bridge_java_native.txt >&2 || true
+    exit 1
+fi
+echo "[agent] OK: Bridge native 声明一致 ($(wc -l < build/bridge_agent_native.txt) 个 native 方法)"
+
 echo "[agent] javac (classpath: asm;hooks 对 1.20.1 混淆名反射,无 MC 编译依赖)..."
 # agent/mosaic/Bridge.java = M4-1 Bridge 的内嵌版(API 相同,静态块按绝对路径
 # System.load)——编译进 agent jar → 运行时零外部类路径/零 java.library.path 依赖

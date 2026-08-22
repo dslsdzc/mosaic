@@ -78,7 +78,10 @@ bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 
 | MinecraftServer.tickServer(BooleanSupplier) | `MinecraftServer.a (Ljava/util/function/BooleanSupplier;)V` | `onServerTick`(方法尾,每 tick 派发) |
 
 (1.20.1 中 mojmap 的 `performCommand(CommandSourceStack,String)` 已被
-ProGuard 内联,控制台/聊天命令统一漏斗 = `performPrefixedCommand`。)
+ProGuard 内联,**控制台/RCON 命令**统一漏斗 = `performPrefixedCommand`;
+游戏内聊天命令暂未挂钩——独立反汇编证实聊天命令不走该漏斗(走
+`dt.a(ParseResults,String)`,即 mojmap `performCommand(ParseResults,String)`
+路径),需 hook 该点,留待后续。)
 
 关键工程点:
 
