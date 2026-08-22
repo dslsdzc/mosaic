@@ -26,6 +26,8 @@ public final class Vanilla262Provider implements MosaicProvider {
     private final Properties map = new Properties();
     /** itemStackOf 生成的句柄 → 原版 ItemStack 弱引用(itemStackOf 幂等重建,setItem 回写用)。 */
     private final Map<MosaicItemStack, WeakReference<Object>> stacks = new WeakHashMap<>();
+    /** blockStateOf 生成的句柄 → 原版 BlockState 弱引用(setBlock 回写/取原版状态用)。 */
+    private final Map<MosaicBlockState, WeakReference<Object>> states = new WeakHashMap<>();
 
     public Vanilla262Provider() {
         try { map.load(getClass().getResourceAsStream("VersionMap_26_2.properties")); }
@@ -96,7 +98,7 @@ public final class Vanilla262Provider implements MosaicProvider {
 
     public MosaicBlockState blockStateOf(Object vanillaBlockState) {
         final Object st = vanillaBlockState;
-        return new MosaicBlockState() {
+        MosaicBlockState h = new MosaicBlockState() {
             public MosaicBlock block() { return blockOf(call(st, m("blockstate.block"))); }
             public String[] propertyNames() {
                 try {
@@ -123,6 +125,17 @@ public final class Vanilla262Provider implements MosaicProvider {
                 } catch (Exception e) { throw new MosaicHandleException("property " + name + ": " + e); }
             }
         };
+        if (st != null) states.put(h, new WeakReference<>(st));
+        return h;
+    }
+
+    /** MosaicBlockState 句柄 → 原版 BlockState(弱引用表溯源;不可溯源抛句柄异常)。
+     *  setBlock 写路径回写用(与 itemStackOf/stacks 的 itemStack 回写同款)。 */
+    private Object stateOf(MosaicBlockState h) {
+        WeakReference<Object> ref = states.get(h);
+        Object st = ref == null ? null : ref.get();
+        if (st == null) throw new MosaicHandleException("setBlock: state handle not backed by a vanilla BlockState");
+        return st;
     }
 
     public MosaicItem itemOf(Object vanillaItem) {
@@ -270,6 +283,22 @@ public final class Vanilla262Provider implements MosaicProvider {
                 Object t = callSafe(w, m("level.gametime"));
                 return t instanceof Number n ? n.longValue() : 0L;
             }
+            public boolean setBlock(MosaicBlockPos pos, MosaicBlockState state) {
+                // 写路径:Level.setBlock(BlockPos, BlockState, flags=3)(默认更新标志,与
+                // 1.8.9 setBlockState(pos, state) 内部 flags=3 对齐)。句柄未持有真实
+                // Level(null 或维度令牌)时抛 MosaicHandleException——写路径不静默
+                // (与读路径 getBlock 的 null 语义区分;真实路径待运行中服务端环境)。
+                if (w == null) throw new MosaicHandleException("setBlock: world handle has no live Level");
+                if (pos == null || state == null)
+                    throw new MosaicHandleException("setBlock: pos and state must be non-null");
+                try {
+                    Object bp = ReflectUtil.callConstructor(cls("blockpos"), pos.x(), pos.y(), pos.z());
+                    Object st = stateOf(state);
+                    Object r = ReflectUtil.call(w, m("level.setblock"), bp, st, 3);
+                    return r instanceof Boolean b && b;
+                } catch (MosaicHandleException e) { throw e; }
+                catch (Exception e) { throw new MosaicHandleException("setBlock: " + e); }
+            }
         };
     }
 
@@ -385,18 +414,7 @@ public final class Vanilla262Provider implements MosaicProvider {
     public MosaicRegistry registryOf(Object vanillaRegistry) {
         final Object reg = vanillaRegistry;
         return new MosaicRegistry() {
-            public int id(String registryName) {
-                try {
-                    if (registryName == null) return -1;
-                    Object ident = ReflectUtil.callStatic(cls("identifier"), m("identifier.parse"), registryName);
-                    if (ident == null) return -1;
-                    // 26.2 DefaultedRegistry:getValue(未注册名) 返回默认值(air),须先 containsKey 存在性守卫
-                    if (!(ReflectUtil.call(reg, m("registry.containskey"), ident) instanceof Boolean b) || !b)
-                        return -1;
-                    Object value = ReflectUtil.call(reg, m("registry.value"), ident);
-                    return value == null ? -1 : intOf(ReflectUtil.call(reg, m("registry.id"), value));
-                } catch (Exception e) { return -1; }
-            }
+            public int id(String registryName) { return registryIdOf(reg, registryName); }
             public String name(int id) {
                 try {
                     if (id < 0) return null;
@@ -408,6 +426,62 @@ public final class Vanilla262Provider implements MosaicProvider {
                     return key == null ? null : key.toString();
                 } catch (Exception e) { return null; }
             }
+            public MosaicRegistryEntry registerBlock(String registryName, Object vanillaBlock) {
+                return registerEntry("block", "registry.block", "registries.block", registryName, vanillaBlock);
+            }
+            public MosaicRegistryEntry registerItem(String registryName, Object vanillaItem) {
+                return registerEntry("item", "registry.item", "registries.item", registryName, vanillaItem);
+            }
+        };
+    }
+
+    /** 名 → id 查询(26.2 DefaultedRegistry 存在性守卫:getValue(未注册名) 返回默认值,
+     *  先 containsKey 判存在再取值;共享给 id() 与 registerEntry 的条目 id 计算)。 */
+    private int registryIdOf(Object reg, String registryName) {
+        try {
+            if (registryName == null) return -1;
+            Object ident = ReflectUtil.callStatic(cls("identifier"), m("identifier.parse"), registryName);
+            if (ident == null) return -1;
+            if (!(ReflectUtil.call(reg, m("registry.containskey"), ident) instanceof Boolean b) || !b)
+                return -1;
+            Object value = ReflectUtil.call(reg, m("registry.value"), ident);
+            return value == null ? -1 : intOf(ReflectUtil.call(reg, m("registry.id"), value));
+        } catch (Exception e) { return -1; }
+    }
+
+    /** 注册写路径(26.2 扁平化语义:注册名 → 注册表,BuiltInRegistries 直注册)。
+     *  注册目标 = 该类型的规范注册表(BuiltInRegistries.BLOCK / ITEM),与句柄
+     *  包装的注册表对象无关——registerBlock/registerItem 各自锚定类型的注册表。
+     *  流程:名字/对象校验 → 重复守卫(containsKey,先于 vanilla 抛错自拦截,与 M7-B
+     *  命令重名守卫同款)→ ResourceKey.create(Registries.X, Identifier) →
+     *  Registry.register(registry, key, value)(静态;MappedRegistry.register 对
+     *  重复键/重复值/frozen 抛 IllegalStateException —— 统一吸收为 MosaicApiException)。
+     *  注意:26.2 BuiltInRegistries 在 Bootstrap.bootStrap() 末尾 freeze() 且无
+     *  unfreeze API(逆向核实 MappedRegistry.java),真实注册只在可写注册表上下文
+     *  (服务端引导/模组加载期)可用;契约环境(已 freeze)注册即抛 MosaicApiException。 */
+    private MosaicRegistryEntry registerEntry(String what, String regFieldKey, String resKeyFieldKey,
+                                              String registryName, Object vanilla) {
+        if (registryName == null || registryName.isEmpty())
+            throw new MosaicApiException(what + " registry name must be non-empty");
+        if (vanilla == null) throw new MosaicApiException("vanilla " + what + " must be non-null");
+        try {
+            Object reg = builtInRegistry(regFieldKey);   // BuiltInRegistries.BLOCK / ITEM
+            Object ident = ReflectUtil.callStatic(cls("identifier"), m("identifier.parse"), registryName);
+            if (ident == null) throw new MosaicApiException("invalid registry name: " + registryName);
+            if (ReflectUtil.call(reg, m("registry.containskey"), ident) instanceof Boolean b && b)
+                throw new MosaicApiException(what + " already registered: " + registryName);
+            Object resKeyField = ReflectUtil.fieldStatic(cls("registries"), m(resKeyFieldKey));   // Registries.BLOCK/ITEM
+            Object key = ReflectUtil.callStatic(cls("reskey"), m("reskey.create"), resKeyField, ident);
+            ReflectUtil.callStatic(cls("registry"), m("registry.register"), reg, key, vanilla);
+            return entryOf(reg, registryName);
+        } catch (MosaicApiException e) { throw e; }
+        catch (Exception e) { throw new MosaicApiException("register " + what + " '" + registryName + "': " + e); }
+    }
+
+    private MosaicRegistryEntry entryOf(final Object reg, final String name) {
+        return new MosaicRegistryEntry() {
+            public int id() { return registryIdOf(reg, name); }
+            public String registryName() { return name; }
         };
     }
 

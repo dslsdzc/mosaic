@@ -1,5 +1,7 @@
 package mosaic.vanilla;
 
+import mosaic.Since;
+
 /** 世界:稳定句柄(26.2 world.level.Level ↔ 1.8.9 world.World 均转换为此)。
  *  语义锚定(规格 §5):维度/方块读/实体遍历/世界推进。 */
 public interface MosaicWorld {
@@ -19,4 +21,8 @@ public interface MosaicWorld {
     void save();
     /** 世界总游戏时间(1.8.9 getTotalWorldTime ↔ 26.2 getGameTime)。 */
     long gameTime();
+    /** 放置方块(写路径;26.2 Level.setBlock ↔ 1.8.9 World.setBlockState)。返回是否成功。
+     *  句柄未持有真实 Level(契约环境/失效句柄)时抛 MosaicHandleException。 */
+    @Since(1)
+    boolean setBlock(MosaicBlockPos pos, MosaicBlockState state);
 }

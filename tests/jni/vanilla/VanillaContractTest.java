@@ -1,4 +1,5 @@
 import mosaic.MosaicApiException;
+import mosaic.MosaicHandleException;
 import mosaic.vanilla.*;
 
 /** 原版域契约测试:版本无关,在 26.2 与 1.8.9 环境分别运行(共享源码)。
@@ -77,6 +78,32 @@ public class VanillaContractTest {
         check(airId >= 0 && "minecraft:air".equals(reg.name(airId)),
                 "default-registered air resolves (" + airId + " -> " + reg.name(airId) + ")");
 
+        // ---- M8-A:注册写路径(注册名 → 注册表;26.2 扁平化直注册 / 1.8.9 数字 ID 适配) ----
+        // 契约环境断言(务实方案,双代同断言):注册表句柄存在(上方)、重复注册 → 抛
+        // MosaicApiException(唯一性守卫,双代一致)、失败尝试不污染已注册条目。
+        // 真实注册路径(新方块+新名)留待服务端环境——26.2 BuiltInRegistries 在
+        // Bootstrap.bootStrap() 末尾 freeze() 且无 unfreeze API,冻结后连新 Block 的
+        // 构造都失败(Block.<init> → createIntrusiveHolder 抛),见 task-m8-a-report.md;
+        // 1.8.9 blockRegistry/itemRegistry 可写、新 Block(Material,MapColor)/Item()
+        // 可构造(实测),Provider 的 registerBlock/registerItem 真实路径实现完整。
+        boolean dupBlockThrew = false;
+        try { reg.registerBlock("minecraft:stone", blockObj); }
+        catch (MosaicApiException ex) { dupBlockThrew = true; }
+        check(dupBlockThrew, "duplicate registerBlock throws MosaicApiException");
+        boolean dupItemThrew = false;
+        try { reg.registerItem("minecraft:diamond", itemObj); }
+        catch (MosaicApiException ex) { dupItemThrew = true; }
+        check(dupItemThrew, "duplicate registerItem throws MosaicApiException");
+        // 失败尝试不污染已注册条目(双代:守卫先于 vanilla 注册调用,注册表不变)。
+        // registerItem 锚定 item 注册表(26.2 BuiltInRegistries.ITEM / 1.8.9
+        // Item.itemRegistry),与句柄包装的 block 注册表隔离——diamond 在 block
+        // 注册表中保持不可解析(回归守卫:若误用包装注册表,diamond 会被写进
+        // 1.8.9 可写的 blockRegistry,此断言即失败)。
+        check(reg.id("minecraft:stone") >= 0,
+                "stone still resolvable after failed duplicate registerBlock");
+        check(reg.id("minecraft:diamond") == -1,
+                "registerItem did not pollute block registry (diamond stays unresolvable)");
+
         // NBT:缺失键 getString → 空串(接口契约,26.2 Optional.empty 解包)
         check(c.getString("missing").equals(""),
                 "nbt missing key -> empty string (got '" + c.getString("missing") + "')");
@@ -86,6 +113,22 @@ public class VanillaContractTest {
         check(dim != null && !dim.isEmpty(), "world dimension non-empty (got '" + dim + "')");
         check(world.entities().length == 0, "world entities empty");
         check(world.gameTime() == 0, "world gameTime 0 (got " + world.gameTime() + ")");
+
+        // ---- M8-A:World 写路径 setBlock(错误路径;契约环境无真实 Level) ----
+        // 双代一致:token 句柄(26.2 Level.OVERWORLD 令牌 / 1.8.9 dimensionId 令牌)与
+        // null 句柄上的 setBlock 均抛 MosaicHandleException(句柄持原版 Level 引用,
+        // 无效/缺失时抛——写路径不静默,与读路径 getBlock 的 null 语义区分);
+        // 真实路径(Level.setBlock / World.setBlockState,flags=3)待运行中服务端环境。
+        boolean setBlockThrew = false;
+        try { world.setBlock(MosaicBlockPos.of(0, 64, 0), block.state()); }
+        catch (MosaicHandleException ex) { setBlockThrew = true; }
+        check(setBlockThrew, "setBlock on token world handle throws MosaicHandleException");
+        MosaicWorld worldNull = p.worldOf(null);
+        check(worldNull != null, "worldOf(null) null-safe handle");
+        boolean setBlockNullThrew = false;
+        try { worldNull.setBlock(MosaicBlockPos.of(0, 64, 0), block.state()); }
+        catch (MosaicHandleException ex) { setBlockNullThrew = true; }
+        check(setBlockNullThrew, "setBlock on null world handle throws MosaicHandleException");
 
         // Entity/Player(环境限制):两者需真实 Level 才能构造,契约环境不可构造——
         // null 语义断言 + 真实路径待服务端环境(延续 world 的 null-safe 句柄先例)。
