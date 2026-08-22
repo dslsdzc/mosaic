@@ -69,4 +69,18 @@ public class Vanilla189Env implements VanillaEnv {
         // 1.8.9 逆向核实非该签名)。
         return ReflectUtil.fieldStatic("net.minecraft.enchantment.Enchantment", "sharpness");
     }
+    public Object statusEffectObject() throws Exception {
+        // 1.8.9 PotionEffect(int id, int duration, int amplifier) 轻参构造(PotionEffect
+        // .java:36-39,仅存字段);id 10 = Potion.regeneration(ResourceLocation
+        // ("regeneration"),Potion.java:37)——与 26.2 MobEffects.REGENERATION 对齐。
+        // registryName 链(Potion.potionTypes/field_180150_I)在 Potion 类加载时填充,
+        // 与 Bootstrap.register() 无依赖。
+        return ReflectUtil.callConstructor("net.minecraft.potion.PotionEffect", 10, 100, 1);
+    }
+    public Object tagObject() throws Exception {
+        // 1.8.9 无标签系统:逆向核实 uber jar 无 net/minecraft/tags 包(无 Tag/BlockTags
+        // 类;标签概念 1.13+ 随数据驱动注册表引入)→ 契约环境无标签对象,真实路径断言
+        // 跳过(if-available 守卫打印 NOTE;双代不对称:26.2 TagKey 可构造)。
+        throw new ClassNotFoundException("1.8.9 has no net.minecraft.tags package (tag system is 1.13+)");
+    }
 }

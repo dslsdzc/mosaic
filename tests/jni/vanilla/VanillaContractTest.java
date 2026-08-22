@@ -264,6 +264,94 @@ public class VanillaContractTest {
         check("".equals(enchNull.descriptionKey()),
                 "enchantmentOf(null) descriptionKey '' (got '" + enchNull.descriptionKey() + "')");
 
+        // ---- M8-C:LivingEntity(null 语义为主,双代必跑;26.2 LivingEntity / 1.8.9
+        // EntityLivingBase 均需真实 Level 才能构造,契约环境不可构造——与 Entity 先例
+        // 一致;Provider 真实路径(health/maxHealth/dead 直读)完整实现,待服务端环境。
+        // 兜底值双代同值:health 0、maxHealth 0、dead false) ----
+        MosaicLivingEntity living = p.livingEntityOf(null);
+        check(living != null, "livingEntityOf(null) null-safe handle");
+        check(living.health() == 0.0f, "livingEntityOf(null) health 0 (got " + living.health() + ")");
+        check(living.maxHealth() == 0.0f,
+                "livingEntityOf(null) maxHealth 0 (got " + living.maxHealth() + ")");
+        check(!living.dead(), "livingEntityOf(null) dead false");
+
+        // ---- M8-C:StatusEffect(真实路径双代可构造 + null 语义双代必跑) ----
+        // 逆向核实:26.2 MobEffectInstance(Holder, int, int) 轻参构造(MobEffectInstance
+        // .java:56;Holder 用 MobEffects.REGENERATION 静态字段)、1.8.9 PotionEffect(int,
+        // int, int) 轻参构造(PotionEffect.java:36-39)——if-available 守卫作防御:
+        // 某代构造失败 → 真实路径断言跳过,null 语义仍双代必跑(与 commandObject 同款模式)。
+        boolean effectAvailable = false;
+        Object effectObj = null;
+        try { effectObj = env.statusEffectObject(); effectAvailable = true; }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " statusEffectObject unavailable, "
+                    + "status effect real-path assertions skipped: " + ex);
+        }
+        if (effectAvailable) {
+            MosaicStatusEffect eff = p.statusEffectOf(effectObj);
+            check(eff != null, "status effect handle (real path)");
+            // 双代同值断言:26.2 MobEffects.REGENERATION 与 1.8.9 Potion.regeneration
+            // (id 10)同映射 "minecraft:regeneration";duration/amplifier 精确断言
+            // (探针统一构造 duration 100 / amplifier 1)
+            check("minecraft:regeneration".equals(eff.registryName()),
+                    "status effect registryName 'minecraft:regeneration' (got '"
+                            + eff.registryName() + "')");
+            check(eff.amplifier() == 1,
+                    "status effect amplifier 1 (got " + eff.amplifier() + ")");
+            check(eff.duration() == 100,
+                    "status effect duration 100 (got " + eff.duration() + ")");
+        }
+        // StatusEffect null 语义(双代必跑,兜底值双代同值)
+        MosaicStatusEffect effNull = p.statusEffectOf(null);
+        check(effNull != null, "statusEffectOf(null) null-safe handle");
+        check("unknown".equals(effNull.registryName()),
+                "statusEffectOf(null) registryName 'unknown' (got '" + effNull.registryName() + "')");
+        check(effNull.amplifier() == 0,
+                "statusEffectOf(null) amplifier 0 (got " + effNull.amplifier() + ")");
+        check(effNull.duration() == 0,
+                "statusEffectOf(null) duration 0 (got " + effNull.duration() + ")");
+
+        // ---- M8-C:Tag(26.2 TagKey 可构造真实路径;1.8.9 无标签系统(jar 无
+        // net.minecraft.tags 包,逆向核实)→ if-available 守卫跳过真实断言并打印
+        // NOTE;null 语义双代必跑) ----
+        // 26.2 真实路径限于"可构造 TagKey + registryName":标签内容为数据驱动
+        // (TagLoader 世界加载期绑定),契约环境未绑定 → contents() 空数组(Provider
+        // 吸收未绑定 Named 的迭代异常,HolderSet.java:171);真实内容查询在服务端环境。
+        boolean tagAvailable = false;
+        Object tagObj = null;
+        try { tagObj = env.tagObject(); tagAvailable = true; }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " tagObject unavailable, "
+                    + "tag real-path assertions skipped: " + ex);
+        }
+        if (tagAvailable) {
+            MosaicTag tag = p.tagOf(tagObj);
+            check(tag != null, "tag handle (real path)");
+            check("minecraft:planks".equals(tag.registryName()),
+                    "tag registryName 'minecraft:planks' (got '" + tag.registryName() + "')");
+            check(tag.contents() != null && tag.contents().length == 0,
+                    "tag contents empty in contract env (unbound tags, got "
+                            + (tag.contents() == null ? "null" : String.valueOf(tag.contents().length)) + ")");
+        }
+        // Tag null 语义(双代必跑,兜底值双代同值)
+        MosaicTag tagNull = p.tagOf(null);
+        check(tagNull != null, "tagOf(null) null-safe handle");
+        check("unknown".equals(tagNull.registryName()),
+                "tagOf(null) registryName 'unknown' (got '" + tagNull.registryName() + "')");
+        check(tagNull.contents() != null && tagNull.contents().length == 0,
+                "tagOf(null) contents empty");
+
+        // ---- M8-C:BlockEntity(null 语义为主,双代必跑;26.2 BlockEntity 受保护构造器
+        // 需 BlockEntityType+BlockState、1.8.9 TileEntity 抽象类——契约环境不可构造,
+        // 与 Entity 先例一致;Provider 真实路径完整实现,待服务端环境。
+        // 兜底值双代同值:typeRegistryName "unknown"、pos null) ----
+        MosaicBlockEntity be = p.blockEntityOf(null);
+        check(be != null, "blockEntityOf(null) null-safe handle");
+        check("unknown".equals(be.typeRegistryName()),
+                "blockEntityOf(null) typeRegistryName 'unknown' (got '"
+                        + be.typeRegistryName() + "')");
+        check(be.pos() == null, "blockEntityOf(null) pos null");
+
         if (failures == 0) System.out.println("VANILLA CONTRACT PASSED (" + p.mcVersion() + ")");
         System.exit(failures == 0 ? 0 : 1);
     }

@@ -19,4 +19,11 @@ public interface VanillaEnv {
     /** 附魔对象(if-available 守卫:26.2 轻参构造 Enchantment 记录;1.8.9 静态实例
      *  Enchantment.sharpness);不可构造则抛 → 契约跳过真实路径断言。 */
     Object enchantmentObject() throws Exception;
+    /** 状态效果实例对象(if-available 守卫:26.2 轻参构造 MobEffectInstance(Holder, int,
+     *  int) / 1.8.9 轻参构造 PotionEffect(int, int, int));不可构造则抛 → 契约跳过
+     *  真实路径断言。 */
+    Object statusEffectObject() throws Exception;
+    /** 标签对象(if-available 守卫:26.2 轻参构造 TagKey(ResourceKey, Identifier);
+     *  1.8.9 无标签系统(jar 无 net.minecraft.tags 包)→ 抛 → 契约跳过真实路径断言)。 */
+    Object tagObject() throws Exception;
 }

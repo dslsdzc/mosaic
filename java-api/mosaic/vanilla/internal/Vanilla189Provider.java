@@ -592,6 +592,97 @@ public final class Vanilla189Provider implements MosaicProvider {
         };
     }
 
+    /* ---------- LivingEntity / StatusEffect / Tag / BlockEntity(M8-C) ---------- */
+
+    /** 活体实体句柄工厂:1.8.9 EntityLivingBase 抽象类,构造需真实 World(契约环境不可
+     *  构造,与 Entity 先例一致)→ null 语义为主,真实路径在服务端环境;health =
+     *  getHealth()、maxHealth = getMaxHealth()(EntityLivingBase.java:850/1298,均 final)、
+     *  dead = Entity.isDead public 字段(Entity.java:127)。 */
+    public MosaicLivingEntity livingEntityOf(Object vanillaLivingEntity) {
+        if (vanillaLivingEntity == null) return new NullSafeLivingEntity();
+        final Object le = vanillaLivingEntity;
+        return new MosaicLivingEntity() {
+            public float health() {
+                Object v = callSafe(le, m("livingbase.health"));
+                return v instanceof Number n ? n.floatValue() : 0.0f;
+            }
+            public float maxHealth() {
+                Object v = callSafe(le, m("livingbase.maxhealth"));
+                return v instanceof Number n ? n.floatValue() : 0.0f;
+            }
+            public boolean dead() {
+                try { return ReflectUtil.field(le, m("livingbase.dead")) instanceof Boolean b && b; }
+                catch (Exception e) { return false; }
+            }
+        };
+    }
+
+    /** 状态效果句柄工厂:1.8.9 PotionEffect(int id, int duration, int amplifier) 轻参
+     *  构造(PotionEffect.java:36-39)→ 契约环境真实路径可用。registryName:getPotionID()
+     *  → Potion.potionTypes[id] → private static field_180150_I(Map<ResourceLocation,
+     *  Potion>,Potion 构造器填充,Potion.java:108)逆查(值身份匹配 → key.toString() =
+     *  "minecraft:regeneration",与 Enchantment.locationEnchantments 逆查同款);
+     *  amplifier/duration = getAmplifier()/getDuration()。null → null-safe 句柄。 */
+    public MosaicStatusEffect statusEffectOf(Object vanillaEffectInstance) {
+        if (vanillaEffectInstance == null) return new NullSafeStatusEffect();
+        final Object ei = vanillaEffectInstance;
+        return new MosaicStatusEffect() {
+            public String registryName() {
+                try {
+                    int id = intOf(call(ei, m("potioneffect.potionid")));
+                    Object[] types = (Object[]) ReflectUtil.fieldStatic(cls("potion"), m("potion.potiontypes"));
+                    if (id < 0 || id >= types.length || types[id] == null) return "unknown";
+                    Object map = ReflectUtil.fieldStatic(cls("potion"), m("potion.locationmap"));
+                    if (map instanceof Map<?, ?> m)
+                        for (Map.Entry<?, ?> en : m.entrySet())
+                            if (en.getValue() == types[id]) return en.getKey().toString();
+                    return "unknown";
+                } catch (Exception e) { return "unknown"; }
+            }
+            public int amplifier() { return intOf(call(ei, m("potioneffect.amplifier"))); }
+            public int duration() { return intOf(call(ei, m("potioneffect.duration"))); }
+        };
+    }
+
+    /** 标签句柄工厂:1.8.9 无标签系统(逆向核实:uber jar 无 net/minecraft/tags 包,无
+     *  Tag/BlockTags 类;标签概念 1.13+ 随数据驱动注册表引入)→ 无原版标签对象可包装,
+     *  恒返回 null-safe 句柄(null 语义为主;与 26.2 TagKey 真实路径不对称,契约测试
+     *  以 if-available 守卫处理)。 */
+    public MosaicTag tagOf(Object vanillaTag) {
+        return new NullSafeTag();
+    }
+
+    /** 方块实体句柄工厂:1.8.9 TileEntity 抽象类(真实实例在服务端世界加载时构造,契约
+     *  环境不可构造)→ null 语义为主,真实路径在服务端环境;typeRegistryName = private
+     *  static classToNameMap 逆查(Class → String,addMapping 填充,TileEntity.java:
+     *  295-303:"Chest"/"Furnace" 等)→ 小写合成 "minecraft:chest";pos = getPos()
+     *  → BlockPos.getX/getY/getZ。 */
+    public MosaicBlockEntity blockEntityOf(Object vanillaBlockEntity) {
+        if (vanillaBlockEntity == null) return new NullSafeBlockEntity();
+        final Object be = vanillaBlockEntity;
+        return new MosaicBlockEntity() {
+            public String typeRegistryName() {
+                try {
+                    Object map = ReflectUtil.fieldStatic(cls("tileentity"), m("tileentity.typemap"));
+                    if (map instanceof Map<?, ?> m) {
+                        Object id = m.get(be.getClass());
+                        if (id != null) return "minecraft:" + snakeCase(String.valueOf(id));
+                    }
+                    return "unknown";
+                } catch (Exception e) { return "unknown"; }
+            }
+            public MosaicBlockPos pos() {
+                try {
+                    Object bp = ReflectUtil.call(be, m("tileentity.pos"));
+                    int x = intOf(ReflectUtil.call(bp, m("blockpos.x")));
+                    int y = intOf(ReflectUtil.call(bp, m("blockpos.y")));
+                    int z = intOf(ReflectUtil.call(bp, m("blockpos.z")));
+                    return MosaicBlockPos.of(x, y, z);
+                } catch (Exception e) { return null; }
+            }
+        };
+    }
+
     /** null-safe 配方句柄(双代同值):registryName "unknown"、result null、type ""
      *  (契约环境无真实 Recipe → 兜底值;与 entityOf(null) 的 "unknown" 先例同款)。 */
     private static final class NullSafeRecipe implements MosaicRecipe {
@@ -605,6 +696,32 @@ public final class Vanilla189Provider implements MosaicProvider {
         public String registryName() { return "unknown"; }
         public int maxLevel() { return 0; }
         public String descriptionKey() { return ""; }
+    }
+
+    /** null-safe 活体实体句柄(双代同值):health 0、maxHealth 0、dead false。 */
+    private static final class NullSafeLivingEntity implements MosaicLivingEntity {
+        public float health() { return 0.0f; }
+        public float maxHealth() { return 0.0f; }
+        public boolean dead() { return false; }
+    }
+
+    /** null-safe 状态效果句柄(双代同值):registryName "unknown"、amplifier 0、duration 0。 */
+    private static final class NullSafeStatusEffect implements MosaicStatusEffect {
+        public String registryName() { return "unknown"; }
+        public int amplifier() { return 0; }
+        public int duration() { return 0; }
+    }
+
+    /** null-safe 标签句柄(双代同值):registryName "unknown"、contents 空。 */
+    private static final class NullSafeTag implements MosaicTag {
+        public String registryName() { return "unknown"; }
+        public String[] contents() { return new String[0]; }
+    }
+
+    /** null-safe 方块实体句柄(双代同值):typeRegistryName "unknown"、pos null。 */
+    private static final class NullSafeBlockEntity implements MosaicBlockEntity {
+        public String typeRegistryName() { return "unknown"; }
+        public MosaicBlockPos pos() { return null; }
     }
 
     /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的

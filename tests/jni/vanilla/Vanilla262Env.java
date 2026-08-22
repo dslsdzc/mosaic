@@ -88,4 +88,25 @@ public class Vanilla262Env implements VanillaEnv {
         return ReflectUtil.callConstructor("net.minecraft.world.item.enchantment.Enchantment",
                 desc, def, exclusive, effects);
     }
+    public Object statusEffectObject() throws Exception {
+        // 26.2 MobEffectInstance 为类(非记录;MobEffectInstance.java:25),3 参构造器
+        // MobEffectInstance(Holder<MobEffect>, int, int)(MobEffectInstance.java:56)
+        // 轻参可构造:MobEffects.REGENERATION 为 Holder<MobEffect> 静态字段
+        // (MobEffects.java:54,registerForHolder 注册入 BuiltInRegistries.MOB_EFFECT,
+        // Bootstrap.bootStrap 后为已绑定 Holder)。值断言 duration 100 / amplifier 1,
+        // 与 1.8.9 PotionEffect(10, 100, 1) 对齐(id 10 = regeneration,Potion.java:37)。
+        Object holder = ReflectUtil.fieldStatic("net.minecraft.world.effect.MobEffects", "REGENERATION");
+        return ReflectUtil.callConstructor("net.minecraft.world.effect.MobEffectInstance", holder, 100, 1);
+    }
+    public Object tagObject() throws Exception {
+        // 26.2 TagKey 为记录(record TagKey(ResourceKey registry, Identifier location),
+        // TagKey.java:14),create(ResourceKey, Identifier) 轻参构造(TagKey.java:37):
+        // Registries.BLOCK(ResourceKey<Registry<Block>>,Registries.java:156)+
+        // Identifier.parse("planks")。
+        // 注意:标签内容为数据驱动(标签 JSON 经 TagLoader 世界加载期绑定),契约环境
+        // BuiltInRegistries 无已绑定标签 → contents() 空数组;真实内容查询在服务端环境。
+        Object regKey = ReflectUtil.fieldStatic("net.minecraft.core.registries.Registries", "BLOCK");
+        Object ident = ReflectUtil.callStatic("net.minecraft.resources.Identifier", "parse", "planks");
+        return ReflectUtil.callStatic("net.minecraft.tags.TagKey", "create", regKey, ident);
+    }
 }

@@ -636,6 +636,135 @@ public final class Vanilla262Provider implements MosaicProvider {
         };
     }
 
+    /* ---------- LivingEntity / StatusEffect / Tag / BlockEntity(M8-C) ---------- */
+
+    /** 活体实体句柄工厂:26.2 LivingEntity 抽象类,构造需真实 Level(契约环境不可构造,
+     *  与 Entity 先例一致)→ null 语义为主,真实路径在服务端环境;health = getHealth()、
+     *  maxHealth = getMaxHealth()、dead = isDeadOrDying()(LivingEntity.java:1171:
+     *  getHealth() <= 0.0F || dead)。 */
+    public MosaicLivingEntity livingEntityOf(Object vanillaLivingEntity) {
+        if (vanillaLivingEntity == null) return new NullSafeLivingEntity();
+        final Object le = vanillaLivingEntity;
+        return new MosaicLivingEntity() {
+            public float health() {
+                Object v = callSafe(le, m("livingentity.health"));
+                return v instanceof Number n ? n.floatValue() : 0.0f;
+            }
+            public float maxHealth() {
+                Object v = callSafe(le, m("livingentity.maxhealth"));
+                return v instanceof Number n ? n.floatValue() : 0.0f;
+            }
+            public boolean dead() {
+                Object v = callSafe(le, m("livingentity.dead"));
+                return v instanceof Boolean b && b;
+            }
+        };
+    }
+
+    /** 状态效果句柄工厂:26.2 MobEffectInstance 为类(非记录;MobEffectInstance.java:25,
+     *  7 参构造器仅存字段 + clamp amplifier),3 参构造器轻参可构造(需 Holder<MobEffect>
+     *  —— MobEffects.REGENERATION 等静态 Holder 字段,Bootstrap 注册,见 Vanilla262Env)。
+     *  registryName = getEffect().value() → BuiltInRegistries.MOB_EFFECT.getKey
+     *  (裸记录无注册表上下文 → "unknown");amplifier/duration = getAmplifier()/getDuration()。
+     *  null → null-safe 句柄。 */
+    public MosaicStatusEffect statusEffectOf(Object vanillaEffectInstance) {
+        if (vanillaEffectInstance == null) return new NullSafeStatusEffect();
+        final Object ei = vanillaEffectInstance;
+        return new MosaicStatusEffect() {
+            public String registryName() {
+                try {
+                    Object holder = ReflectUtil.call(ei, m("mobeffectinstance.effect"));
+                    Object eff = ReflectUtil.call(holder, m("holder.value"));
+                    Object key = ReflectUtil.call(builtInRegistry("registry.mobeffect"), m("registry.key"), eff);
+                    return key == null ? "unknown" : key.toString();
+                } catch (Exception e) { return "unknown"; }
+            }
+            public int amplifier() { return intOf(call(ei, m("mobeffectinstance.amplifier"))); }
+            public int duration() { return intOf(call(ei, m("mobeffectinstance.duration"))); }
+        };
+    }
+
+    /** 标签句柄工厂:26.2 TagKey 为记录(record TagKey(ResourceKey registry, Identifier
+     *  location),TagKey.java:14),create(ResourceKey, Identifier) 轻参构造 → 契约环境
+     *  真实路径可用。registryName = location().toString()("minecraft:planks");contents()
+     *  经 tagKey.registry() 解析对应 BuiltInRegistries 注册表 → getTagOrEmpty(tagKey)
+     *  → Holder.value() → 注册表 getKey。标签为数据驱动(标签 JSON 世界加载期经 TagLoader
+     *  绑定),契约环境未绑定 → 迭代未绑定 HolderSet.Named 抛 "Trying to access unbound
+     *  tag"(HolderSet.java:171)→ 吸收为空数组;真实内容查询在服务端环境。
+     *  null → null-safe 句柄。 */
+    public MosaicTag tagOf(Object vanillaTag) {
+        if (vanillaTag == null) return new NullSafeTag();
+        final Object t = vanillaTag;
+        return new MosaicTag() {
+            public String registryName() {
+                try {
+                    Object loc = ReflectUtil.call(t, m("tagkey.location"));
+                    return loc == null ? "unknown" : loc.toString();
+                } catch (Exception e) { return "unknown"; }
+            }
+            public String[] contents() {
+                try {
+                    Object reg = registryForTag(t);
+                    Object iter = ReflectUtil.call(reg, m("registry.gettagoremp"), t);
+                    if (!(iter instanceof Iterable)) return new String[0];
+                    List<String> out = new ArrayList<>();
+                    for (Object h : (Iterable<?>) iter) {
+                        Object value = ReflectUtil.call(h, m("holder.value"));
+                        Object key = ReflectUtil.call(reg, m("registry.key"), value);
+                        out.add(key == null ? String.valueOf(value) : key.toString());
+                    }
+                    return out.toArray(new String[0]);
+                } catch (Exception e) { return new String[0]; }   // 未绑定标签/未知注册表 → 空
+            }
+        };
+    }
+
+    /** TagKey.registry()(ResourceKey) → 对应 BuiltInRegistries 注册表:遍历映射表注册表
+     *  字段键,以 Registry.key()(ResourceKey).identifier() 与 tagKey.registry() 匹配。 */
+    private Object registryForTag(Object tagKey) throws Exception {
+        Object regKey = ReflectUtil.call(tagKey, m("tagkey.registry"));
+        Object loc = ReflectUtil.call(regKey, m("reskey.identifier"));
+        String target = loc == null ? null : loc.toString();
+        if (target == null) throw new NoSuchMethodException("tag registry key unresolvable");
+        for (String fieldKey : new String[] { "registry.block", "registry.item", "registry.entitytype",
+                "registry.attribute", "registry.mobeffect", "registry.blockentitytype",
+                "registry.datacomponent", "registry.recipetype" }) {
+            Object cand = builtInRegistry(fieldKey);
+            Object candKey = callSafe(cand, m("registry.selfkey"));
+            Object candLoc = candKey == null ? null : callSafe(candKey, m("reskey.identifier"));
+            if (target.equals(String.valueOf(candLoc))) return cand;
+        }
+        throw new NoSuchMethodException("no built-in registry for tag " + target);
+    }
+
+    /** 方块实体句柄工厂:26.2 BlockEntity 构造器为受保护(protected BlockEntity
+     *  (BlockEntityType, BlockPos, BlockState)),需 BlockEntityType+BlockState 装配,
+     *  契约环境不可轻参构造 → null 语义为主,真实路径在服务端环境;typeRegistryName =
+     *  getType() → BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey;pos = getBlockPos()
+     *  → Vec3i.getX/getY/getZ。 */
+    public MosaicBlockEntity blockEntityOf(Object vanillaBlockEntity) {
+        if (vanillaBlockEntity == null) return new NullSafeBlockEntity();
+        final Object be = vanillaBlockEntity;
+        return new MosaicBlockEntity() {
+            public String typeRegistryName() {
+                try {
+                    Object type = ReflectUtil.call(be, m("blockentity.type"));
+                    Object key = ReflectUtil.call(builtInRegistry("registry.blockentitytype"), m("registry.key"), type);
+                    return key == null ? "unknown" : key.toString();
+                } catch (Exception e) { return "unknown"; }
+            }
+            public MosaicBlockPos pos() {
+                try {
+                    Object bp = ReflectUtil.call(be, m("blockentity.pos"));
+                    int x = intOf(ReflectUtil.call(bp, m("blockpos.x")));
+                    int y = intOf(ReflectUtil.call(bp, m("blockpos.y")));
+                    int z = intOf(ReflectUtil.call(bp, m("blockpos.z")));
+                    return MosaicBlockPos.of(x, y, z);
+                } catch (Exception e) { return null; }
+            }
+        };
+    }
+
     /** null-safe 配方句柄(双代同值):registryName "unknown"、result null、type ""
      *  (契约环境无真实 Recipe → 兜底值;与 entityOf(null) 的 "unknown" 先例同款)。 */
     private static final class NullSafeRecipe implements MosaicRecipe {
@@ -649,6 +778,32 @@ public final class Vanilla262Provider implements MosaicProvider {
         public String registryName() { return "unknown"; }
         public int maxLevel() { return 0; }
         public String descriptionKey() { return ""; }
+    }
+
+    /** null-safe 活体实体句柄(双代同值):health 0、maxHealth 0、dead false。 */
+    private static final class NullSafeLivingEntity implements MosaicLivingEntity {
+        public float health() { return 0.0f; }
+        public float maxHealth() { return 0.0f; }
+        public boolean dead() { return false; }
+    }
+
+    /** null-safe 状态效果句柄(双代同值):registryName "unknown"、amplifier 0、duration 0。 */
+    private static final class NullSafeStatusEffect implements MosaicStatusEffect {
+        public String registryName() { return "unknown"; }
+        public int amplifier() { return 0; }
+        public int duration() { return 0; }
+    }
+
+    /** null-safe 标签句柄(双代同值):registryName "unknown"、contents 空。 */
+    private static final class NullSafeTag implements MosaicTag {
+        public String registryName() { return "unknown"; }
+        public String[] contents() { return new String[0]; }
+    }
+
+    /** null-safe 方块实体句柄(双代同值):typeRegistryName "unknown"、pos null。 */
+    private static final class NullSafeBlockEntity implements MosaicBlockEntity {
+        public String typeRegistryName() { return "unknown"; }
+        public MosaicBlockPos pos() { return null; }
     }
 
     /** null-safe 命令句柄(双代同值):registered() 空、register no-op(与 worldOf 的

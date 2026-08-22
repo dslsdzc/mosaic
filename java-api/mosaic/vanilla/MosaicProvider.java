@@ -35,4 +35,24 @@ public interface MosaicProvider {
      *  1.8.9 静态实例可用 → 双代真实路径 + null 语义。 */
     @Since(1)
     MosaicEnchantment enchantmentOf(Object vanillaEnchantment);
+
+    /** 活体实体句柄工厂(26.2 LivingEntity ↔ 1.8.9 EntityLivingBase)。契约环境不可
+     *  构造(需真实实体对象,与 Entity 先例一致)→ null 语义为主,真实路径在服务端环境。 */
+    @Since(1)
+    MosaicLivingEntity livingEntityOf(Object vanillaLivingEntity);
+    /** 状态效果句柄工厂(26.2 MobEffectInstance ↔ 1.8.9 PotionEffect)。双代契约环境
+     *  均可轻参构造(26.2 MobEffectInstance(Holder, int, int) / 1.8.9 PotionEffect(int,
+     *  int, int))→ 双代真实路径 + null 语义。 */
+    @Since(1)
+    MosaicStatusEffect statusEffectOf(Object vanillaEffectInstance);
+    /** 标签句柄工厂(26.2 TagKey 记录轻参构造 ↔ 1.8.9 无标签系统(jar 无 net.minecraft.
+     *  tags,逆向核实)→ 26.2 真实路径(TagKey registryName;contents 需已绑定标签,
+     *  契约环境未绑定 → 空)+ 双代 null 语义。 */
+    @Since(1)
+    MosaicTag tagOf(Object vanillaTag);
+    /** 方块实体句柄工厂(26.2 BlockEntity ↔ 1.8.9 TileEntity)。契约环境不可构造(26.2
+     *  受保护构造器需 BlockEntityType+BlockState、1.8.9 抽象类)→ null 语义为主,
+     *  真实路径在服务端环境。 */
+    @Since(1)
+    MosaicBlockEntity blockEntityOf(Object vanillaBlockEntity);
 }
