@@ -10,12 +10,12 @@
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** 核心循环 | mmap 冷存储(48B/64B 记录)、紧凑索引、工作集/状态机(物化/墓碑/恢复)、触发索引派发、所有权/驱逐 | ✅ 10M 冷函数 RSS 增量 0.12MB、全循环 ~200μs、热路径 ~1.00× |
-| **M1.5** 分片 | 多 pack 合并索引(open_many)、模块范围表两级二分、按 pack mremap | ✅ 1 亿函数 = 100 片 × 100 万,构建峰值 83.9MB/片,打开 RSS 61.65MB |
-| **M2** 事务/调度 | 依赖图闭包、事务 API(prepare/validate/commit/rollback=demote/abort)、函数级 generation 路由、状态迁移钩子(state_transform)、混合版本共存、DAG 调度器(线程池/优先级/亲和性/取消) | ✅ 跨两次 commit 状态链 3→30→32→320→322 逐步可复核;1M 派发 1109.7s→4.0s(ws 键位混合) |
-| **M3** 合成世界 | 事件类型 API v1(205 事件目录 + 载荷签名 + 频率档)、合成世界模拟器、世界场景门禁 | ✅ 生命周期全循环 58.7μs;稀疏订阅工作集 28,149/100,000(≪ 总数) |
-| **M4** 真实 MC | 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)、vanilla 1.20.1 集成、世界内动态加载 | ✅ 服务端 tick→注入→bridge→C 派发活循环;运行中 install 新 pack 下个 tick 即生效,零重启 |
-| **M5** 兼容层 | Fabric/NeoForge mod 兼容 Provider | ⏳ 暂缓 |
+| **M1** 核心循环 | mmap 冷存储(48B/64B 记录)、紧凑索引、工作集/状态机(物化/墓碑/恢复)、触发索引派发、所有权/驱逐 | 完成:10M 冷函数 RSS 增量 0.12MB、全循环 ~200μs、热路径 ~1.00× |
+| **M1.5** 分片 | 多 pack 合并索引(open_many)、模块范围表两级二分、按 pack mremap | 完成:1 亿函数 = 100 片 × 100 万,构建峰值 83.9MB/片,打开 RSS 61.65MB |
+| **M2** 事务/调度 | 依赖图闭包、事务 API(prepare/validate/commit/rollback=demote/abort)、函数级 generation 路由、状态迁移钩子(state_transform)、混合版本共存、DAG 调度器(线程池/优先级/亲和性/取消) | 完成:跨两次 commit 状态链 3→30→32→320→322 逐步可复核;1M 派发 1109.7s→4.0s(ws 键位混合) |
+| **M3** 合成世界 | 事件类型 API v1(205 事件目录 + 载荷签名 + 频率档)、合成世界模拟器、世界场景门禁 | 完成:生命周期全循环 58.7μs;稀疏订阅工作集 28,149/100,000(≪ 总数) |
+| **M4** 真实 MC | 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)、vanilla 1.20.1 集成、世界内动态加载 | 完成:服务端 tick→注入→bridge→C 派发活循环;运行中 install 新 pack 下个 tick 即生效,零重启 |
+| **M5** 兼容层 | Fabric/NeoForge mod 兼容 Provider | 暂缓 |
 
 ## 设计
 
