@@ -30,7 +30,27 @@
 include/mosaic/  稳定 API 头(base/pack/runtime/module/function/event/ownership/eviction)
 src/             pack_reader·index·working_set·lifecycle(L0-L3)·trigger·ownership·eviction(L4)
 src/pack_builder.c   离线 pack 构建器
-bench/           合成宇宙 + S1-S4 基准
+src/jni/         JVM Bridge(JNI 双向通道,M4-1)
+java/mosaic/     Java 稳定 API 面(mosaic.Bridge)
+bench/           合成宇宙 + S1-S4 基准 + world 场景 + gen_test_pack
 tests/           mini_test 单元/属性测试
 ci/gates.sh      验收门禁
 ```
+
+## JVM Bridge(M4-1)
+
+设计规格第 24 节:Java(Minecraft 侧)经 Minimal Bridge 接入 C 运行时,
+零 MC 依赖、纯本地可测。Java 侧 API 面 = `mosaic.Bridge`
+(`java/mosaic/Bridge.java`):`runtimeOpen/Close`(pack 组打开/关闭)、
+`functionCount`、`eventId`(名 → id,未注册 -1)、`eventDispatch`
+(byte[] 载荷 → 执行数)、`workingSetCount`、`lastError`。载荷约定:
+`byte[]` 与 `include/mosaic/events.h` 载荷结构体**小端一致**,长度 =
+结构体大小(例:方块事件 16B = player_id/x/y/z/block_type;玩家事件 4B)。
+
+构建与运行 JNI 测试(需要 JDK 21;JAVA_HOME 未设时用 `/usr/lib/jvm/default`):
+
+```bash
+bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 断言,exit 0
+```
+
+产物:`build/lib/libmosaic_jni.so`(CMake FindJNI + mosaic_core 静态库链接)。

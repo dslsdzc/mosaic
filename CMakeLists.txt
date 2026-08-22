@@ -29,6 +29,8 @@ add_library(mosaic_core STATIC
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # M2-3:sched.c 仅 libc + pthread(静态库的 PRIVATE 链接依赖会传导到最终链接行)
 target_link_libraries(mosaic_core PRIVATE m dl Threads::Threads)
+# M4-1:mosaic_jni 共享库链接需要 PIC 静态库(对可执行链接无行为影响)
+set_target_properties(mosaic_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 enable_testing()
 
@@ -156,3 +158,16 @@ target_include_directories(world_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(world_bench mosaic_core m dl)
 set_target_properties(world_bench PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench)
+
+# M4-1:JNI 测试用小 pack 生成器(1 模块 3 函数、player_join 事件、2 触发器)
+add_executable(gen_test_pack bench/gen_test_pack.c)
+target_link_libraries(gen_test_pack mosaic_core)
+
+# ---- M4-1:JVM Bridge(JNI 双向通道骨架,零 MC 依赖) ----
+# JDK 自动探测:JAVA_HOME 未设时 FindJNI 走 /usr/lib/jvm/*(含 default 链接);
+# 输出 build/lib/libmosaic_jni.so(System.loadLibrary("mosaic_jni") 查找点)
+find_package(JNI REQUIRED)
+add_library(mosaic_jni SHARED src/jni/bridge.c)
+target_include_directories(mosaic_jni PRIVATE ${JNI_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(mosaic_jni mosaic_core ${JNI_LIBRARIES})
+set_target_properties(mosaic_jni PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
