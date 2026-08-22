@@ -631,3 +631,11 @@ void mosaic_tx_free(mosaic_tx *tx) {
   free(tx->probes);
   free(tx);
 }
+
+/* M6-C:补丁 pack 只读视图(bridge txPatchFnIds 枚举补丁 fn 表用)。abort/
+   rollback 后补丁 map 已释放 → NULL(句柄语义与其余 tx_* 一致:调用方须在
+   终态操作前取数,Java 侧 TxImpl 于 begin 时快照)。 */
+const struct pack_view *mosaic_tx_patch_view(mosaic_tx *tx) {
+  if (!tx || !tx->patch.map) return NULL;
+  return &tx->patch;
+}

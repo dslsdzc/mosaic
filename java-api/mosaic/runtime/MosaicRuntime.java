@@ -46,4 +46,16 @@ public interface MosaicRuntime {
     /** 触发索引(事件 → 订阅函数 id 区间)。 */
     @Since(1)
     MosaicTriggerIndex triggerIndex();
+    /** pack 只读信息(冷态计数:module/fn/trigger/item/event)。 */
+    @Since(1)
+    MosaicPackInfo packInfo();
+    /** 依赖图:直接依赖遍历(单层,非闭包;闭包/环/版本约束见 dependencyResolver())。 */
+    @Since(1)
+    MosaicDependencyGraph dependencyGraph();
+    /** 模块信息(冷态,modDesc 包装:id/version/soPath/fnCount);未找到返回 null。 */
+    @Since(1)
+    MosaicModuleInfo moduleInfo(long moduleId);
+    /** 驱逐策略(窗口 T 纳秒;0 = 立即过期)。 */
+    @Since(1)
+    MosaicEvictionPolicy evictionPolicy();
 }

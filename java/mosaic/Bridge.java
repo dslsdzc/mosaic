@@ -83,7 +83,7 @@ public final class Bridge {
     public static native long fnDescriptor(long rt, long fnId);       /* 0 = 未命中 */
     public static native long fnDescField(long rt, long desc, int field);  /* 字段:0=id 1=module 2=codeOff 3=gen 4=stateSize 5=cost 6=flags */
     public static native long moduleDescriptor(long rt, long moduleId);
-    public static native long modDescField(long rt, long desc, int field); /* 0=id 1=version 2=gen */
+    public static native long modDescField(long rt, long desc, int field); /* 0=id 1=version 2=gen 3=fnCount */
     public static native String modDescString(long rt, long desc, int field); /* 0=name 1=soPath */
     /* ---- M5:item 描述符查询(直通 descriptor.c) ---- */
     public static native long itemCount(long rt);
@@ -107,4 +107,14 @@ public final class Bridge {
     public static native int txRollback(long tx);
     public static native void txAbort(long tx);
     public static native void txFree(long tx);
+    /* ---- M6-C:元数据(直接依赖遍历 / pack 计数 / tx 补丁信息) ---- */
+    /* 直接依赖遍历:moduleId 的依赖模块 id 列表(单层,非闭包);out == null 探测
+       返回总数,out != null 填充 min(cap, 总数) 条并返回实际写入数 */
+    public static native int depForEach(long rt, long moduleId, long[] out);
+    /* pack 信息计数:field 0=module 1=fn 2=trigger 3=item 4=event(全部基础
+       pack 合并求和);非法 field 返回 -1 */
+    public static native long packInfoCount(long rt, int field);
+    /* tx 补丁函数 id 列表(补丁 pack fn 表,按 fn_id 排序);out == null 探测
+       返回总数,out != null 填充 min(cap, 总数) 条并返回实际写入数 */
+    public static native int txPatchFnIds(long tx, long[] out);
 }

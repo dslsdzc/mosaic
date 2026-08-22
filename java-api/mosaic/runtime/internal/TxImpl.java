@@ -2,15 +2,19 @@ package mosaic.runtime.internal;
 
 import mosaic.MosaicHandleException;
 import mosaic.runtime.MosaicTransaction;
+import mosaic.runtime.MosaicTxPatch;
 import mosaic.runtime.MosaicTxResult;
 
 /** 事务实现(补丁 pack 滚动更新):直通 mosaic_tx_*。begin 即完成 begin 级校验;
  *  prepare = 无操作成功(C begin 已校验);终态(commit/rollback/abort)后必须
- *  txFree(C:free 是唯一释放入口,abort 不释放句柄)。 */
+ *  txFree(C:free 是唯一释放入口,abort 不释放句柄)。
+ *  M6-C:patch() 于 begin 时快照(packPath + fnIds 经 native 枚举补丁 fn 表),
+ *  终态操作后句柄已释放仍可读。 */
 public final class TxImpl implements MosaicTransaction {
     private long tx;
+    private final MosaicTxPatch patch;
 
-    private TxImpl(long tx) { this.tx = tx; }
+    private TxImpl(long tx, MosaicTxPatch patch) { this.tx = tx; this.patch = patch; }
 
     static MosaicTransaction begin(long rt, String patchPath) {
         if (patchPath == null || patchPath.isEmpty())
@@ -18,8 +22,10 @@ public final class TxImpl implements MosaicTransaction {
         long h = Native.txBegin(rt, patchPath);
         if (h == 0)
             throw new MosaicHandleException("tx begin failed (lastError=" + Native.lastError(rt) + ")");
-        return new TxImpl(h);
+        return new TxImpl(h, new TxPatchImpl(patchPath, h));
     }
+
+    public MosaicTxPatch patch() { return patch; }
 
     public MosaicTxResult prepare() { return new TxResultImpl(true, null); }
 

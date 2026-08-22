@@ -371,6 +371,7 @@ JNIEXPORT jlong JNICALL Java_mosaic_Bridge_modDescField(JNIEnv *env, jclass c, j
     case 0: return (jlong)mm_id(m);
     case 1: return (jlong)mm_version(m);
     case 2: return (jlong)mm_generation(m);
+    case 3: return (jlong)mm_fn_count(m);   /* M6-C:fnCount(模块记录内计数) */
   }
   return -1;
 }
@@ -581,4 +582,83 @@ JNIEXPORT void JNICALL Java_mosaic_Bridge_txAbort(JNIEnv *env, jclass c, jlong t
 JNIEXPORT void JNICALL Java_mosaic_Bridge_txFree(JNIEnv *env, jclass c, jlong tx) {
   (void)env; (void)c;
   mosaic_tx_free((mosaic_tx *)(intptr_t)tx);
+}
+
+/* ===== M6-C:元数据(直接依赖遍历 / pack 计数 / tx 补丁 fn 表) ===== */
+
+/* 直接依赖遍历:moduleId 的依赖模块 id 列表(单层,非闭包;闭包见 depResolve)。
+   定位模块记录(find_module_ex)→ module_dep_range 取本 pack 依赖表区间 →
+   收集 md_dep_id。out == NULL → 探测模式返回总数;out != NULL → 填充
+   min(cap, 总数) 条并返回实际写入数(容量不足截断,与 triggerSubscribers
+   同款两阶段纪律)。模块不存在 → -1(last_err 由 find_module_ex 置)。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_depForEach(JNIEnv *env, jclass c, jlong rt_,
+                                                     jlong moduleId, jlongArray out) {
+  (void)c;
+  mosaic_runtime *rt = (mosaic_runtime *)(intptr_t)rt_;
+  if (!rt) return -1;
+  size_t pack = 0;
+  const mosaic_module_record *m = find_module_ex(rt, (u64)moduleId, &pack);
+  if (!m) return -1;
+  u64 s, e;
+  module_dep_range(rt, pack, m, &s, &e);
+  if (s == e) return 0;                    /* 无依赖 → 空 */
+  if (!out) return (jint)(e - s);          /* 探测:总数 */
+  jsize cap = (*env)->GetArrayLength(env, out);
+  if (cap <= 0) return (jint)(e - s);
+  jlong *buf = (*env)->GetLongArrayElements(env, out, NULL);
+  if (!buf) { throw_oom(env); return -1; }
+  const u8 *map = rt->packs[pack].map;
+  const mosaic_dep_entry *deps = (const mosaic_dep_entry *)(map + hdr_dep_off(map));
+  jsize written = 0;
+  for (u64 i = s; i < e && written < cap; i++) buf[written++] = (jlong)md_dep_id(&deps[i]);
+  (*env)->ReleaseLongArrayElements(env, out, buf, 0);
+  return (jint)written;
+}
+
+/* pack 信息:5 计数一次返回(field 0=module 1=fn 2=trigger 3=item 4=event;
+   全部基础 pack 合并求和,与 moduleCount/functionCount/itemCount 同视图;
+   eventCount 每 pack u32,跨 pack 求和可能溢出 u32——以 jlong 返回,
+   Java 侧按接口 int 截断)。非法 field → -1。 */
+JNIEXPORT jlong JNICALL Java_mosaic_Bridge_packInfoCount(JNIEnv *env, jclass c, jlong rt_,
+                                                         jint field) {
+  (void)env; (void)c;
+  mosaic_runtime *rt = (mosaic_runtime *)(intptr_t)rt_;
+  if (!rt) return 0;
+  u64 total = 0;
+  for (size_t i = 0; i < rt->n_packs; i++) {
+    const u8 *map = rt->packs[i].map;
+    switch (field) {
+      case 0: total += hdr_module_count(map); break;
+      case 1: total += hdr_fn_count(map); break;
+      case 2: total += hdr_trigger_count(map); break;
+      case 3: total += hdr_item_count(map); break;
+      case 4: total += hdr_event_count(map); break;
+      default: return -1;
+    }
+  }
+  return (jlong)total;
+}
+
+/* tx 补丁函数 id 列表:枚举补丁 pack fn 表(mosaic_tx_patch_view 只读视图;
+   补丁每 fn 单条且按 fn_id 排序——begin 已校验)。out == NULL → 探测返回
+   总数;out != NULL → 填充 min(cap, 总数) 条返回实际写入数。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_txPatchFnIds(JNIEnv *env, jclass c, jlong tx_,
+                                                       jlongArray out) {
+  (void)c;
+  mosaic_tx *tx = (mosaic_tx *)(intptr_t)tx_;
+  if (!tx) return -1;
+  const struct pack_view *pv = mosaic_tx_patch_view(tx);
+  if (!pv) return -1;
+  u64 n = hdr_fn_count(pv->map);
+  if (!out) return (jint)n;                /* 探测:总数 */
+  jsize cap = (*env)->GetArrayLength(env, out);
+  if (cap <= 0) return (jint)n;
+  jlong *buf = (*env)->GetLongArrayElements(env, out, NULL);
+  if (!buf) { throw_oom(env); return -1; }
+  const mosaic_function_record *fns =
+      (const mosaic_function_record *)(pv->map + hdr_fn_off(pv->map));
+  jsize written = 0;
+  for (u64 i = 0; i < n && written < cap; i++) buf[written++] = (jlong)mf_id(&fns[i]);
+  (*env)->ReleaseLongArrayElements(env, out, buf, 0);
+  return (jint)written;
 }

@@ -1,10 +1,12 @@
 package mosaic.runtime.internal;
 
 import mosaic.MosaicHandleException;
+import mosaic.runtime.MosaicLease;
 import mosaic.runtime.MosaicResourceLease;
 import mosaic.runtime.MosaicResourceManager;
 
-/** 资源管理实现:租约直通 mosaic_lease_acquire/release(refs 守护)。 */
+/** 资源管理实现:租约直通 mosaic_lease_acquire/release(refs 守护)。
+ *  acquire/lease 同 native;MosaicLease 为独立接口形态(release 语义 = close)。 */
 public final class ResourceManagerImpl implements MosaicResourceManager {
     private final RuntimeImpl rt;
 
@@ -15,6 +17,13 @@ public final class ResourceManagerImpl implements MosaicResourceManager {
         if (h == 0)
             throw new MosaicHandleException("lease acquire failed (lastError=" + Native.lastError(rt.handle()) + ")");
         return new ResourceLeaseImpl(fnId, h);
+    }
+
+    public MosaicLease lease(long fnId) {
+        long h = Native.leaseAcquire(rt.handle(), fnId);
+        if (h == 0)
+            throw new MosaicHandleException("lease acquire failed (lastError=" + Native.lastError(rt.handle()) + ")");
+        return new LeaseImpl(fnId, h);
     }
 
     public void release(MosaicResourceLease lease) {

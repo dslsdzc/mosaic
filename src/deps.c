@@ -17,9 +17,11 @@
 
 /* ---- 依赖区间:module 在本 pack 依赖表内的 [start, end) ----
    从 dep_off 起逐条读 md_owner_id == module_id 的连续区间(依赖表按 owner
-   排序),直到 owner 变化或表尾;无依赖(dep_off = NONE 或越界)→ 空区间。 */
-static void module_dep_range(mosaic_runtime *rt, size_t pack, const mosaic_module_record *m,
-                             u64 *out_start, u64 *out_end) {
+   排序),直到 owner 变化或表尾;无依赖(dep_off = NONE 或越界)→ 空区间。
+   M6-C:非 static(bridge.c depForEach 复用,与 trigger_lower_bound 同款纪律;
+   声明在 mosaic_internal.h)。 */
+void module_dep_range(mosaic_runtime *rt, size_t pack, const mosaic_module_record *m,
+                      u64 *out_start, u64 *out_end) {
   const u8 *map = rt->packs[pack].map;
   u64 dc = hdr_dep_count(map);
   u32 off = mm_dep_off(m);

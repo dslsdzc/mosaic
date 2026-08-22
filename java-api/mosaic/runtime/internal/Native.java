@@ -83,4 +83,12 @@ public final class Native {
     public static int txRollback(long tx) { return mosaic.Bridge.txRollback(tx); }
     public static void txAbort(long tx) { mosaic.Bridge.txAbort(tx); }
     public static void txFree(long tx) { mosaic.Bridge.txFree(tx); }
+
+    /* M6-C:元数据(一行委托)——直接依赖遍历 / pack 计数 / tx 补丁 fn 表 */
+    public static int depForEach(long rt, long moduleId, long[] out) {
+        return mosaic.Bridge.depForEach(rt, moduleId, out); }
+    public static long packInfoCount(long rt, int field) {
+        return mosaic.Bridge.packInfoCount(rt, field); }
+    public static int txPatchFnIds(long tx, long[] out) {
+        return mosaic.Bridge.txPatchFnIds(tx, out); }
 }

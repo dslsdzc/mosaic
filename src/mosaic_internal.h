@@ -145,6 +145,16 @@ const mosaic_module_record *find_module_active(mosaic_runtime *rt, u64 module_id
    用)。M6-B:bridge.c(triggerSubscribers 列出事件订阅者)复用,免复制二分。 */
 u64 trigger_lower_bound(const u8 *map, u32 ev);
 
+/* deps.c — M6-C:模块直接依赖区间(单层非闭包;bridge.c depForEach 复用)。
+   调用方已定位模块记录(m 来自 find_module_ex,pack 为其所在 pack 下标)。 */
+void module_dep_range(mosaic_runtime *rt, size_t pack, const mosaic_module_record *m,
+                      u64 *out_start, u64 *out_end);
+
+/* tx.c — M6-C:补丁 pack 只读视图(bridge.c txPatchFnIds 枚举补丁 fn 表)。
+   补丁 map 已释放(abort/rollback 后)返回 NULL。 */
+typedef struct mosaic_tx mosaic_tx;   /* 与 mosaic/tx.h 同一不透明类型(不依赖其 include) */
+const struct pack_view *mosaic_tx_patch_view(mosaic_tx *tx);
+
 /* runtime.c — 布局/事件表校验(M2-2b tx_begin 复用:补丁 pack 是独立 mmap,
    校验思路与 open_many 逐 pack 一致) */
 int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,

@@ -27,6 +27,10 @@ public final class RuntimeImpl implements MosaicRuntime {
     /* M6-B:状态域 / 触发域(每运行时单例) */
     private final StateStoreImpl stateStore = new StateStoreImpl(this);
     private final TriggerIndexImpl triggerIndex = new TriggerIndexImpl(this);
+    /* M6-C:元数据域(每运行时单例) */
+    private final PackInfoImpl packInfo = new PackInfoImpl(this);
+    private final DependencyGraphImpl dependencyGraph = new DependencyGraphImpl(this);
+    private final EvictionPolicyImpl evictionPolicy = new EvictionPolicyImpl(0);
 
     private RuntimeImpl(long rt) {
         this.rt = rt;
@@ -77,4 +81,16 @@ public final class RuntimeImpl implements MosaicRuntime {
     public MosaicBridge bridge() { return bridge; }
     public MosaicStateStore stateStore() { return stateStore; }
     public MosaicTriggerIndex triggerIndex() { return triggerIndex; }
+    public MosaicPackInfo packInfo() { return packInfo; }
+    public MosaicDependencyGraph dependencyGraph() { return dependencyGraph; }
+    public MosaicEvictionPolicy evictionPolicy() { return evictionPolicy; }
+    public MosaicModuleInfo moduleInfo(long moduleId) {
+        long h = rt;
+        long d = Native.moduleDescriptor(h, moduleId);
+        if (d == 0) return null;
+        return new ModuleInfoImpl(moduleId,
+                (int) Native.modDescField(h, d, 1),       /* version */
+                Native.modDescString(h, d, 1),            /* soPath */
+                (int) Native.modDescField(h, d, 3));      /* fnCount */
+    }
 }

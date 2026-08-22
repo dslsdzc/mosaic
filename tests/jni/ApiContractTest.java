@@ -4,9 +4,15 @@ import mosaic.MosaicHandleException;
 import mosaic.MosaicProviderNotFoundException;
 import mosaic.runtime.*;
 import mosaic.runtime.internal.CapabilityImpl;
+import mosaic.runtime.internal.CheckpointImpl;
 import mosaic.runtime.internal.EventPayloadImpl;
+import mosaic.runtime.internal.EvictionPolicyImpl;
 import mosaic.runtime.internal.Native;
+import mosaic.runtime.internal.OwnedResourceImpl;
+import mosaic.runtime.internal.PackBuilderImpl;
 import mosaic.runtime.internal.StateTransformImpl;
+import mosaic.runtime.internal.TaskDependencyImpl;
+import mosaic.runtime.internal.TaskResultImpl;
 import mosaic.runtime.internal.TriggerEntryImpl;
 
 /** Task 5 评审:Capability 域契约(注册 → require 命中 → optional miss → require miss 抛)。 */
@@ -247,6 +253,109 @@ public class ApiContractTest {
         MosaicTriggerEntry te = new TriggerEntryImpl(join, 0x100000000L);
         check(te.eventId() == join && te.fnId() == 0x100000000L,
               "M6B TriggerEntry data class eventId/fnId");
+
+        // ---- M6-C:元数据域(剩余 11 接口) ----
+        // pack 信息:gen_test_pack = 1 模块 3 函数 2 触发器 0 item 1 事件
+        MosaicPackInfo pi = rt.packInfo();
+        check(pi.moduleCount() == 1, "M6C packInfo moduleCount==1, got " + pi.moduleCount());
+        check(pi.functionCount() == 3, "M6C packInfo functionCount==3, got " + pi.functionCount());
+        check(pi.triggerCount() == 2, "M6C packInfo triggerCount==2, got " + pi.triggerCount());
+        check(pi.itemCount() == 0, "M6C packInfo itemCount==0, got " + pi.itemCount());
+        check(pi.eventCount() == 1, "M6C packInfo eventCount==1, got " + pi.eventCount());
+
+        // 模块信息(modDesc 包装:id/version/soPath/fnCount)
+        MosaicModuleInfo mi = rt.moduleInfo(1L);
+        check(mi != null && mi.moduleId() == 1L && mi.version() == 1 && mi.fnCount() == 3,
+              "M6C moduleInfo id/version/fnCount, got " + (mi == null ? "null" : mi.fnCount()));
+        check(mi != null && mi.soPath() != null && mi.soPath().length() > 0, "M6C moduleInfo soPath");
+        check(rt.moduleInfo(999L) == null, "M6C moduleInfo unknown -> null");
+
+        // 依赖图:模块 1 无依赖 → 空(depForEach 单层遍历)
+        MosaicDependencyGraph dg = rt.dependencyGraph();
+        java.util.List<Long> depSeen = new java.util.ArrayList<>();
+        dg.forEachDep(1L, depSeen::add);
+        check(depSeen.isEmpty(), "M6C forEachDep(1) empty (no deps), got " + depSeen);
+
+        // 带依赖 pack(模块 1 → 模块 2):Java builder 造包 → 独立运行时断言
+        String depPackPath = "/tmp/mosaic_dep_graph.pack";
+        MosaicPackBuilder pb = PackBuilderImpl.create(depPackPath, 2, 0, 0, 1, 1);
+        pb.addEvent("player_join");
+        pb.addModule(1, 1, "dep_m1", "/tmp/mosaic_dep_m1.so");
+        pb.addModule(2, 1, "dep_m2", "/tmp/mosaic_dep_m2.so");
+        pb.addDep(1, 2);
+        check(pb.finish() == 0, "M6C dep pack finish");
+        MosaicRuntime rt2 = MosaicRuntime.open(new String[]{depPackPath});
+        depSeen.clear();
+        rt2.dependencyGraph().forEachDep(1L, depSeen::add);
+        check(depSeen.size() == 1 && depSeen.get(0) == 2L, "M6C forEachDep(1)->[2], got " + depSeen);
+        depSeen.clear();
+        rt2.dependencyGraph().forEachDep(2L, depSeen::add);
+        check(depSeen.isEmpty(), "M6C forEachDep(2) empty, got " + depSeen);
+        rt2.close();
+
+        // tx 补丁信息(补丁 pack fn(1,0) gen 2 → fnIds=[fn(1,0)],packPath 回显)
+        String patchPath = "/tmp/mosaic_tx_patch_info.pack";
+        MosaicPackBuilder pbp = PackBuilderImpl.create(patchPath, 1, 1, 0, 0, 1);
+        pbp.addEvent("player_join");
+        pbp.addModule(1, 1, "jni_mod", "/tmp/mosaic_tx_patch.so");
+        pbp.addFn(1, 0, 0, 64, 2, 1, 0x4 | 0x8);   /* gen 2 > base gen 1 */
+        check(pbp.finish() == 0, "M6C patch pack finish");
+        MosaicTransaction tx = rt.txBegin(patchPath);
+        MosaicTxPatch p = tx.patch();
+        check(p.packPath().equals(patchPath), "M6C txPatch packPath");
+        check(p.fnIds().length == 1 && p.fnIds()[0] == 0x100000000L,
+              "M6C txPatch fnIds=[fn(1,0)], got " + Arrays.toString(p.fnIds()));
+        tx.abort();
+
+        // 任务结果 / 任务依赖 / 检查点(数据类与函数式语义)
+        MosaicTaskResult tOk = TaskResultImpl.success();
+        check(tOk.ok() && tOk.error() == null, "M6C TaskResult success()");
+        MosaicTaskResult tErr = TaskResultImpl.failed("boom");
+        check(!tErr.ok() && "boom".equals(tErr.error()), "M6C TaskResult failed()");
+        MosaicTaskDependency td = new TaskDependencyImpl(42L);
+        check(td.taskId() == 42L, "M6C TaskDependency taskId==42");
+        MosaicTask stubTask = new MosaicTask() {
+            public long id() { return 1; }
+            public int[] dependencyIds() { return new int[0]; }
+            public int priority() { return 0; }
+            public int affinity() { return -1; }
+            public void run() { }
+            public MosaicCheckpoint checkpoint() { return CheckpointImpl.NOOP; }
+        };
+        MosaicCheckpoint cp = CheckpointImpl.NOOP;
+        cp.save(stubTask);   /* no-op 不抛 */
+        check(true, "M6C Checkpoint NOOP save no-throw");
+
+        // 驱逐策略(窗口 T 持有者)
+        MosaicEvictionPolicy ep = rt.evictionPolicy();
+        check(ep != null && ep.windowNanos() == 0, "M6C evictionPolicy windowNanos==0");
+        check(new EvictionPolicyImpl(5_000_000L).windowNanos() == 5_000_000L,
+              "M6C EvictionPolicy custom window");
+
+        // 所有权(dispose 包装,幂等)
+        final int[] disposed = {0};
+        MosaicOwnedResource or = OwnedResourceImpl.of(() -> disposed[0]++);
+        or.dispose();
+        or.dispose();
+        check(disposed[0] == 1, "M6C OwnedResource dispose idempotent, got " + disposed[0]);
+
+        // 租约(MosaicLease 独立接口:fnId + release;release 幂等)
+        MosaicLease lease2 = rm.lease(0x100000000L);
+        check(lease2 != null && lease2.fnId() == 0x100000000L, "M6C lease fnId");
+        check(rt.workingSetCount() >= 1, "M6C lease holds fn in ws");
+        lease2.release();
+        lease2.release();
+
+        // 服务引用(service + release;release 幂等,不删除注册条目)
+        MosaicService svc = new MosaicService() { };
+        sr.register(MosaicService.class, svc);
+        MosaicServiceRef sref = sr.ref(MosaicService.class);
+        check(sref != null && sref.service() == svc, "M6C serviceRef service identity");
+        sref.release();
+        sref.release();
+        check(sr.get(MosaicService.class) == svc, "M6C serviceRef release keeps registry entry");
+        try { sr.ref(Runnable.class); check(false, "M6C ref non-MosaicService should throw"); }
+        catch (IllegalArgumentException e) { check(true, "M6C ref non-MosaicService throws"); }
 
         rt.close();
 

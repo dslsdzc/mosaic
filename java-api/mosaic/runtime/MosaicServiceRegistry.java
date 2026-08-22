@@ -1,5 +1,7 @@
 package mosaic.runtime;
 
+import mosaic.Since;
+
 public interface MosaicServiceRegistry {
     /** 任意类型服务均可注册(Task 5 契约测试 register(Runnable.class) 要求;
      *  无界泛型与原 MosaicService 限定兼容——所有既有调用点仍合法)。 */
@@ -7,4 +9,8 @@ public interface MosaicServiceRegistry {
     <T> T get(Class<T> type);
     /** 可选获取(不存在返回 null)。 */
     <T> T optional(Class<T> type);
+    /** 服务引用(service + release;release 幂等,不删除注册条目;类型非
+     *  MosaicService 抛 IllegalArgumentException)。 */
+    @Since(1)
+    <T> MosaicServiceRef ref(Class<T> type);
 }
