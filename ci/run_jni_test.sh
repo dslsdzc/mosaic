@@ -9,8 +9,9 @@ echo "[jni] cmake build..."
 cmake -B build >/dev/null
 cmake --build build -j >/dev/null
 
-echo "[jni] generate test pack..."
+echo "[jni] generate test packs..."
 build/gen_test_pack build/jni_test.pack build/bench/synth_mod.so
+build/gen_test_pack build/jni_add.pack build/bench/synth_mod.so add
 
 echo "[jni] javac..."
 rm -rf build/javaclasses
@@ -19,6 +20,6 @@ javac -d build/javaclasses java/mosaic/Bridge.java tests/jni/MosaicBridgeTest.ja
 
 echo "[jni] java (java.library.path=build/lib)..."
 java -Djava.library.path=build/lib -cp build/javaclasses \
-     mosaic.jni.MosaicBridgeTest build/jni_test.pack
+     mosaic.jni.MosaicBridgeTest build/jni_test.pack build/jni_add.pack
 
 echo "[jni] OK"

@@ -71,6 +71,45 @@ int event_tables_match(const struct pack_view *a, const struct pack_view *b) {
   return 1;
 }
 
+/* M4-3:单 pack 打开(mmap)公共 helper——open_many 逐 pack 与 add_pack 复用。
+   与 open_many 原内联逻辑逐行一致:O_RDWR 优先 + O_RDONLY 回退(只读 pack 的
+   状态写入墓碑走 NOMEM 优雅失败,纯查询不受影响);失败时 fd 已关、map 未建。 */
+static int open_pack_view(const char *path, struct pack_view *out, char *errbuf, size_t errlen) {
+  out->fd = -1;
+  int fd = open(path, O_RDWR);
+  if (fd < 0) fd = open(path, O_RDONLY);
+  if (fd < 0) { if (errbuf && errlen) snprintf(errbuf, errlen, "open %s failed", path); return -1; }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size < HDR_SIZE) {
+    close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "pack too small"); return -1;
+  }
+  size_t len = (size_t)st.st_size;
+  void *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  if (map == MAP_FAILED) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "mmap failed"); return -1; }
+  out->fd = fd; out->map = map; out->map_len = len;
+  out->state_len = hdr_state_len(map);
+  out->min_mod = 1; out->max_mod = 0;   /* 空模块表默认空范围 */
+  return 0;
+}
+
+/* 范围表重叠检测(open_many 与 add_pack 共用):packs 须已按 (min,max) 排序。
+   空范围 (1,0) 的 max < min,直接跳过——它既不能与相邻 pack 误报重叠,也不能
+   阻断检查:空 pack 夹在两个重叠的非空 pack 之间时(如 A(0,5)、空、B(3,8)),
+   只比较相邻两两会漏掉 A∩B;跟踪上一个非空 pack,跳过空范围仍与最近的非空
+   pack 比较(M1.5-A 复评纪律)。返回 0 = 无重叠;-1 = 重叠。 */
+static int ranges_overlap(const struct pack_view *packs, size_t n) {
+  size_t prev = (size_t)-1;
+  for (size_t i = 0; i < n; i++) {
+    if (packs[i].max_mod < packs[i].min_mod) continue;   /* 空范围,跳过 */
+    if (prev != (size_t)-1 &&
+        packs[prev].min_mod <= packs[i].max_mod &&
+        packs[i].min_mod <= packs[prev].max_mod)
+      return -1;
+    prev = i;
+  }
+  return 0;
+}
+
 mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_packs,
                                          char *errbuf, size_t errlen) {
   if (n_packs == 0 || !paths) {
@@ -92,20 +131,7 @@ mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_pack
        (否则写入越过文件末页 → SIGBUS);先试 O_RDWR,只读 pack 回退 O_RDONLY
        (此时有状态写入的墓碑会走 NOMEM 错误路径优雅失败,纯查询不受影响)。 */
     struct pack_view *pv = &packs[i];
-    pv->fd = -1;
-    int fd = open(paths[i], O_RDWR);
-    if (fd < 0) fd = open(paths[i], O_RDONLY);
-    if (fd < 0) { if (errbuf && errlen) snprintf(errbuf, errlen, "open %s failed", paths[i]); goto fail; }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size < HDR_SIZE) {
-      close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "pack too small"); goto fail;
-    }
-    size_t len = (size_t)st.st_size;
-    void *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-    if (map == MAP_FAILED) { close(fd); if (errbuf && errlen) snprintf(errbuf, errlen, "mmap failed"); goto fail; }
-    pv->fd = fd; pv->map = map; pv->map_len = len;
-    pv->state_len = hdr_state_len(map);
-    pv->min_mod = 1; pv->max_mod = 0;   /* 空模块表默认空范围 */
+    if (open_pack_view(paths[i], pv, errbuf, errlen) != 0) goto fail;
   }
   for (size_t i = 0; i < n_packs; i++)
     if (validate_layout(rt, packs[i].map, packs[i].map_len, errbuf, errlen) != 0) goto fail;
@@ -120,22 +146,11 @@ mosaic_runtime *mosaic_runtime_open_many(const char *const *paths, size_t n_pack
   }
   /* 排序(按 min),rt->packs 顺序即范围表顺序 */
   qsort(packs, n_packs, sizeof *packs, cmp_pack_view);
-  /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后检查;空范围 (1,0)
-     的 max < min,直接跳过——它既不能与相邻 pack 误报重叠(含 module_id=0
-     的 pack 相邻时 min=0 的双向条件会误报),也不能阻断检查:空 pack 夹在
-     两个重叠的非空 pack 之间时(如 A(0,5)、空、B(3,8)),只比较相邻两两
-     会漏掉 A∩B。因此跟踪上一个非空 pack,跳过空范围仍与最近的非空 pack
-     比较(M1.5-A 复评)。 */
-  size_t prev = (size_t)-1;
-  for (size_t i = 0; i < n_packs; i++) {
-    if (packs[i].max_mod < packs[i].min_mod) continue;   /* 空范围,跳过 */
-    if (prev != (size_t)-1 &&
-        packs[prev].min_mod <= packs[i].max_mod &&
-        packs[i].min_mod <= packs[prev].max_mod) {
-      if (errbuf && errlen) snprintf(errbuf, errlen, "overlapping pack module ranges");
-      goto fail;
-    }
-    prev = i;
+  /* 互不重叠:fn_id 空间要求 module_id 全局唯一。排序后检查(空范围跳过逻辑
+     见 ranges_overlap 注释)。 */
+  if (ranges_overlap(packs, n_packs) != 0) {
+    if (errbuf && errlen) snprintf(errbuf, errlen, "overlapping pack module ranges");
+    goto fail;
   }
   /* 事件表一致性:所有 pack 与 packs[0] 逐条相同 */
   for (size_t i = 1; i < n_packs; i++) {
@@ -158,6 +173,64 @@ fail:
 mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t errlen) {
   const char *paths[1] = { pack_path };
   return mosaic_runtime_open_many(paths, 1, errbuf, errlen);
+}
+
+/* M4-3:世界内动态加载——向已打开实例追加一个 pack(零重启)。
+   校验纪律与 open_many 逐 pack 完全一致:格式校验 → 事件表与 pack 0 一致 →
+   模块范围与既有 packs 不重叠。实现:先独立打开 + 校验新 pack(不碰 rt);
+   再在临时数组上合并 + 重建范围表(排序 + 重叠检测);全部通过才 realloc
+   提交。任何失败路径在提交前 munmap+close 新 pack,rt 状态零改动——
+   完全回滚,不残留半挂载 pack(function_count/pack_count/查询/派发不变)。
+   挂载后既有 find_function / mosaic_event_dispatch 自动覆盖新 pack
+   (dispatch 遍历 rt->packs;find_* 走范围表二分),无需其他改动。 */
+int mosaic_runtime_add_pack(mosaic_runtime *rt, const char *path, char *errbuf, size_t errlen) {
+  if (!rt || !path) {
+    if (errbuf && errlen) snprintf(errbuf, errlen, "invalid runtime");
+    return -1;
+  }
+  /* 1) 独立打开 + 校验新 pack(open_many 单 pack 同款;fd/map 归属 nv,
+        失败路径在此释放,rt 未动) */
+  struct pack_view nv;
+  memset(&nv, 0, sizeof nv);
+  nv.fd = -1;
+  if (open_pack_view(path, &nv, errbuf, errlen) != 0) return -1;
+  if (validate_layout(rt, nv.map, nv.map_len, errbuf, errlen) != 0) goto fail;
+  if (!event_tables_match(&rt->packs[0], &nv)) {
+    set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "event table mismatch");
+    goto fail;
+  }
+  u64 mc = hdr_module_count(nv.map);
+  if (mc) {
+    const mosaic_module_record *mods = (const mosaic_module_record *)(nv.map + hdr_module_off(nv.map));
+    nv.min_mod = mm_id(&mods[0]);
+    nv.max_mod = mm_id(&mods[mc - 1]);
+  }
+  /* 2) 临时合并数组:既有 packs + 新 pack → 排序 → 重叠检测(与 open_many
+        同纪律:空范围跳过仍与最近非空比较)。临时数组失败即 free,无残留。 */
+  struct pack_view *tmp = calloc(rt->n_packs + 1, sizeof *tmp);
+  if (!tmp) { set_err(rt, MOSAIC_ERR_NOMEM, errbuf, errlen, "oom"); goto fail; }
+  memcpy(tmp, rt->packs, rt->n_packs * sizeof *tmp);
+  tmp[rt->n_packs] = nv;
+  qsort(tmp, rt->n_packs + 1, sizeof *tmp, cmp_pack_view);
+  if (ranges_overlap(tmp, rt->n_packs + 1) != 0) {
+    set_err(rt, MOSAIC_ERR_BAD_PACK, errbuf, errlen, "overlapping pack module ranges");
+    free(tmp);
+    goto fail;
+  }
+  /* 3) 提交:realloc 扩容 + 拷贝排序结果。realloc 失败时旧数组内容与指针
+       不变(C 标准保证),rt 仍为原状,无回滚需求。 */
+  struct pack_view *grown = realloc(rt->packs, (rt->n_packs + 1) * sizeof *grown);
+  if (!grown) { set_err(rt, MOSAIC_ERR_NOMEM, errbuf, errlen, "oom"); free(tmp); goto fail; }
+  rt->packs = grown;
+  rt->n_packs++;
+  memcpy(rt->packs, tmp, rt->n_packs * sizeof *tmp);
+  free(tmp);
+  rt->last_err = MOSAIC_OK;
+  return 0;
+fail:
+  munmap(nv.map, nv.map_len);
+  if (nv.fd >= 0) close(nv.fd);
+  return -1;
 }
 
 void mosaic_runtime_close(mosaic_runtime *rt) {
@@ -202,6 +275,11 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
 }
 
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt) { return rt ? rt->last_err : MOSAIC_ERR_IO; }
+
+/* M4-3:已挂载 pack 数(status 观测用) */
+u32 mosaic_runtime_pack_count(const mosaic_runtime *rt) {
+  return rt ? (u32)rt->n_packs : 0;
+}
 
 /* M3-3:工作集大小 = ws 哈希中已物化 ACTIVE 函数数(驱逐/调优观测点) */
 u32 mosaic_runtime_working_set_count(const mosaic_runtime *rt) {

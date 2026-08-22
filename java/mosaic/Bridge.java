@@ -42,6 +42,15 @@ public final class Bridge {
     /* 工作集大小(已物化 ACTIVE 函数数)。 */
     public static native int workingSetCount(long rt);
 
+    /* M4-3:世界内动态加载——向已打开实例追加一个 pack(零重启);0 成功,
+       -1 失败(错误码经 lastError 查询;校验与 open_many 单 pack 一致:
+       格式、事件表与 pack 0 一致、模块范围不重叠)。挂载后既有派发立即
+       覆盖新 pack 的订阅者。 */
+    public static native int runtimeAddPack(long rt, String packPath);
+
+    /* 当前已挂载 pack 数。 */
+    public static native int packCount(long rt);
+
     /* 最后错误码(0 = 无错;语义见 include/mosaic/base.h MOSAIC_ERR_*)。 */
     public static native int lastError(long rt);
 }

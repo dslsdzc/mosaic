@@ -38,5 +38,9 @@ public final class Bridge {
 
     public static native int workingSetCount(long rt);
 
+    public static native int runtimeAddPack(long rt, String packPath);
+
+    public static native int packCount(long rt);
+
     public static native int lastError(long rt);
 }

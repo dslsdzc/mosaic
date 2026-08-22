@@ -111,3 +111,32 @@ cd mc-server && java -javaagent:../build/lib/mosaic-agent.jar -Xmx1G \
 `transformed net/minecraft/server/MinecraftServer / dt / alk`、tick 派发计数
 每 tick 增长(`calls=166 executed=498` → 6 秒后 `calls=298 executed=894`)、
 `/mosaic test block_break 7 10 20 30 1` → `executed=3`。
+
+## 世界内动态加载(M4-3)
+
+**服务器运行中安装新 pack(新 Mod),零重启**:C 运行时
+`mosaic_runtime_add_pack(rt, path, errbuf, errlen)`(校验纪律与 open_many
+单 pack 一致:格式校验 → 事件表与 pack 0 一致 → 模块范围不重叠;失败完全
+回滚,function_count/pack_count 不变),JNI `Bridge.runtimeAddPack`,
+agent 命令 `/mosaic install <pack路径>`。挂载后既有派发自动覆盖新 pack
+(dispatch 遍历 `rt->packs`),**下个 tick 即执行其 tick 订阅者**——无需
+`/reload`、无需重启服务端。
+
+```bash
+build/gen_world_pack mc-server/packs/world2.pack "$PWD/build/libtest_mod.so" world2
+# 控制台(服务端运行中):
+#   /mosaic status                       → functions=13 packs=1 ...
+#   /mosaic install <绝对路径>/world2.pack → installed ... (functions=13->19)
+#   /mosaic status                       → functions=19 packs=2 ...
+#   /mosaic install <world.pack 重叠>     → install ... failed (err=1)
+```
+
+端到端验证证据(`mc-server/console.log`):安装前 tick 每 tick 执行
+`executed/calls = 3.0`(world 的 3 个 tick 订阅者);安装 world2 后 10 秒
+窗口 `calls 456→661`(205 ticks)、`executed 1974→3204`(1230 次)→
+**每 tick 6.0 = world 3 + world2 3**,world2 的 tick 订阅者随安装后下个
+tick 立即执行(世界内加载生效);重叠安装 world.pack(模块 1 与已挂载
+模块 1 重叠)→ `failed (err=1)`。JNI 侧 `ci/run_jni_test.sh` 追加断言:
+`runtimeAddPack` 成功(函数数 3→5、派发 2→3)、重叠失败 -1 + `lastError`
+非 0、失败后函数数不变;`test_shards` 新增 4 个用例(挂载/重叠回滚/事件
+不一致/重复挂载)。

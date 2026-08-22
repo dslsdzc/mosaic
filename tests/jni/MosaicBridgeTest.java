@@ -28,7 +28,8 @@ public final class MosaicBridgeTest {
 
     public static void main(String[] args) {
         String pack = args.length > 0 ? args[0] : "build/jni_test.pack";
-        System.out.println("MosaicBridgeTest: pack=" + pack);
+        String pack2 = args.length > 1 ? args[1] : "build/jni_add.pack";
+        System.out.println("MosaicBridgeTest: pack=" + pack + " pack2=" + pack2);
 
         /* 1. 打开生成的 pack */
         long rt = Bridge.runtimeOpen(new String[]{pack});
@@ -67,6 +68,37 @@ public final class MosaicBridgeTest {
         check(Bridge.workingSetCount(0) == 0, "workingSetCount(0) == 0");
         check(Bridge.lastError(0) == 0, "lastError(0) == 0");
         Bridge.runtimeClose(0);   /* 零句柄关闭:no-op 不崩 */
+
+        /* 7. M4-3:世界内动态加载 runtimeAddPack */
+        long rt2 = Bridge.runtimeOpen(new String[]{pack});
+        check(rt2 != 0, "runtimeOpen(main pack) != 0 (addPack case)");
+        if (rt2 == 0) {
+            System.out.println("rt2==0; lastError=" + Bridge.lastError(rt2));
+            System.exit(1);
+        }
+        check(Bridge.functionCount(rt2) == 3,
+              "functionCount == 3 before add (got " + Bridge.functionCount(rt2) + ")");
+        check(Bridge.packCount(rt2) == 1,
+              "packCount == 1 before add (got " + Bridge.packCount(rt2) + ")");
+        check(Bridge.runtimeAddPack(rt2, pack2) == 0,
+              "runtimeAddPack(pack2) == 0");
+        check(Bridge.functionCount(rt2) == 5,
+              "functionCount == 5 after add 3+2 (got " + Bridge.functionCount(rt2) + ")");
+        check(Bridge.packCount(rt2) == 2,
+              "packCount == 2 after add (got " + Bridge.packCount(rt2) + ")");
+        /* 新 pack 订阅者立即参与派发:player_join 订阅 2 → 3 */
+        int n2 = Bridge.eventDispatch(rt2, join, payload);
+        check(n2 == 3, "eventDispatch == 3 after add (got " + n2 + ")");
+        /* 失败:重复挂载主 pack(模块 1 与已挂载模块 1 范围重叠)→ -1 + lastError 非 0 */
+        check(Bridge.runtimeAddPack(rt2, pack) == -1,
+              "runtimeAddPack(overlap) == -1");
+        check(Bridge.lastError(rt2) != 0,
+              "lastError != 0 after failed add (got " + Bridge.lastError(rt2) + ")");
+        check(Bridge.functionCount(rt2) == 5,
+              "functionCount unchanged after failed add (got " + Bridge.functionCount(rt2) + ")");
+        check(Bridge.packCount(rt2) == 2,
+              "packCount unchanged after failed add (got " + Bridge.packCount(rt2) + ")");
+        Bridge.runtimeClose(rt2);
 
         System.out.println(failures == 0 ? "ALL JNI TESTS PASSED"
                                          : failures + " JNI TEST(S) FAILED");

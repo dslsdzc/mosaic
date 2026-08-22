@@ -330,6 +330,126 @@ static void test_shards_overlap_across_empty(void) {
   MT_CHECK(strstr(err, "overlapping") != NULL);
 }
 
+/* ---- M4-3:世界内动态加载(运行时追加 pack,零重启)---- */
+
+/* 开 [P0, P2] → add_pack P1(模块 30,排序应插入中间)→ 跨三 pack 查询/派发。
+   P0 订阅 player_join:10|0、10|1、20|0(3);P1:30|0(1);P2:40|0(1)。 */
+static void test_add_pack_mounts(void) {
+  char err[256];
+  MT_CHECK(build_p0() == 0 && build_p1() == 0 && build_p2() == 0);
+  const char *paths[2] = { P0_PATH, P2_PATH };
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths, 2, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 2);
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), 4);   /* 3 + 1 */
+  /* 追加前:模块 40 命中、30 未命中 */
+  MT_CHECK(mosaic_runtime_find_module(rt, 40) != NULL);
+  MT_CHECK(mosaic_runtime_find_module(rt, 30) == NULL);
+  /* 追加 P1(模块 30):成功,pack 数 2 → 3 */
+  MT_CHECK(mosaic_runtime_add_pack(rt, P1_PATH, err, sizeof err) == 0);
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 3);
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), 5);   /* 3 + 1 + 1 */
+  /* 范围表重建并重排:min 升序 10 / 30 / 40(P1 插到中间而非追加尾部) */
+  MT_CHECK_EQ_U64(rt->packs[0].min_mod, 10);
+  MT_CHECK_EQ_U64(rt->packs[1].min_mod, 30);
+  MT_CHECK_EQ_U64(rt->packs[2].min_mod, 40);
+  /* 跨三 pack 查询(find_function_ex 归属 pack 下标 = 排序后位置) */
+  size_t pk = 999;
+  MT_CHECK(find_function_ex(rt, 10ull << 32, &pk) != NULL && pk == 0);
+  MT_CHECK(find_function_ex(rt, 30ull << 32, &pk) != NULL && pk == 1);
+  MT_CHECK(find_function_ex(rt, 40ull << 32, &pk) != NULL && pk == 2);
+  /* 跨三 pack 派发:player_join → 3 + 1 + 1 = 5;新 pack 订阅者立即执行 */
+  u32 ev = mosaic_runtime_event_id(rt, "player_join");
+  MT_CHECK_EQ_U64(ev, 1);
+  MT_CHECK_EQ_U64(mosaic_event_dispatch(rt, ev, NULL), 5);
+  mosaic_fn_obj *f40 = mosaic_fn_materialize(rt, 40ull << 32);
+  MT_CHECK(f40 != NULL);
+  if (f40) MT_CHECK_EQ_U64(*(u32 *)f40->state, 1);
+  /* 清理:派发物化的 5 个订阅者全部墓碑(保持 LSAN 干净) */
+  if (f40) MT_CHECK(mosaic_fn_tombstone(rt, f40) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 10ull << 32)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, (10ull << 32) | 1)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 20ull << 32)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 30ull << 32)) == 0);
+  mosaic_runtime_close(rt);
+}
+
+/* 重叠范围 → -1 + errbuf "overlapping pack module ranges" + 完整回滚:
+   pack 数/function_count 不变、新模块查不到、既有派发不受影响 */
+static void test_add_pack_reject_overlap(void) {
+  char err[256];
+  MT_CHECK(build_p0() == 0 && build_p1() == 0 && build_ovl() == 0);
+  const char *paths[2] = { P0_PATH, P1_PATH };
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths, 2, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  u64 before = mosaic_runtime_function_count(rt);
+  /* OVL 模块 15 落在 P0 范围 10..20 内(事件集相同,隔离重叠判定) */
+  MT_CHECK(mosaic_runtime_add_pack(rt, OVL_PATH, err, sizeof err) == -1);
+  MT_CHECK(strstr(err, "overlapping pack module ranges") != NULL);
+  MT_CHECK(mosaic_runtime_last_error(rt) != 0);   /* 错误码可取 */
+  /* 原 2 pack 状态不变:pack 数、function_count、查询、派发 */
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 2);
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), before);
+  MT_CHECK(mosaic_runtime_find_module(rt, 15) == NULL);
+  MT_CHECK(mosaic_runtime_find_module(rt, 10) != NULL);
+  u32 ev = mosaic_runtime_event_id(rt, "player_join");
+  MT_CHECK_EQ_U64(mosaic_event_dispatch(rt, ev, NULL), 4);   /* P0 3 + P1 1 */
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), before);   /* 派发后仍不变 */
+  /* 清理:派发物化的 4 个订阅者墓碑 */
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 10ull << 32)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, (10ull << 32) | 1)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 20ull << 32)) == 0);
+  MT_CHECK(mosaic_fn_tombstone(rt, mosaic_fn_materialize(rt, 30ull << 32)) == 0);
+  mosaic_runtime_close(rt);
+}
+
+/* 事件表不一致 → -1 + errbuf "event table mismatch";function_count 不变 */
+static void test_add_pack_reject_event_mismatch(void) {
+  char err[256];
+  MT_CHECK(build_p0() == 0 && build_bad() == 0);
+  const char *paths[1] = { P0_PATH };
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths, 1, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  u64 before = mosaic_runtime_function_count(rt);
+  /* BAD 模块 50 不与 P0 重叠(隔离事件判定),事件集 {player_join, craft} 不同 */
+  MT_CHECK(mosaic_runtime_add_pack(rt, BAD_PATH, err, sizeof err) == -1);
+  MT_CHECK(strstr(err, "event table mismatch") != NULL);
+  MT_CHECK(mosaic_runtime_last_error(rt) != 0);
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 1);
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), before);
+  MT_CHECK(mosaic_runtime_find_module(rt, 50) == NULL);
+  mosaic_runtime_close(rt);
+}
+
+/* 同 pack 挂两次:第二挂载与自身范围重叠 → 拒绝(幂等防线);缺失文件 → 拒绝 */
+static void test_add_pack_double_and_missing(void) {
+  char err[256];
+  MT_CHECK(build_p0() == 0 && build_p1() == 0);
+  const char *paths[1] = { P0_PATH };
+  mosaic_runtime *rt = mosaic_runtime_open_many(paths, 1, err, sizeof err);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  MT_CHECK(mosaic_runtime_add_pack(rt, P1_PATH, err, sizeof err) == 0);
+  u64 after_first = mosaic_runtime_function_count(rt);
+  /* 再挂 P1:模块 30 与已挂载的 P1 范围重叠 → 拒绝 */
+  MT_CHECK(mosaic_runtime_add_pack(rt, P1_PATH, err, sizeof err) == -1);
+  MT_CHECK(strstr(err, "overlapping") != NULL);
+  MT_CHECK_EQ_U64(mosaic_runtime_function_count(rt), after_first);
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 2);
+  /* 缺失文件 → "open ... failed" */
+  unlink("/tmp/mosaic_shard_missing2.pack");
+  MT_CHECK(mosaic_runtime_add_pack(rt, "/tmp/mosaic_shard_missing2.pack", err, sizeof err) == -1);
+  MT_CHECK(strstr(err, "open /tmp/mosaic_shard_missing2.pack failed") != NULL);
+  MT_CHECK_EQ_U64(mosaic_runtime_pack_count(rt), 2);
+  /* 空运行时/空路径参数 */
+  MT_CHECK(mosaic_runtime_add_pack(NULL, P1_PATH, err, sizeof err) == -1);
+  MT_CHECK(strstr(err, "invalid runtime") != NULL);
+  mosaic_runtime_close(rt);
+}
+
 static void test_open_many_fail_keeps_stdin(void) {
   char err[256];
   MT_CHECK(build_p0() == 0);
@@ -369,5 +489,9 @@ int main(int argc, char **argv) {
   MT_RUN(test_no_packs_and_single);
   MT_RUN(test_open_many_fail_keeps_stdin);
   MT_RUN(test_shards_overlap_across_empty);
+  MT_RUN(test_add_pack_mounts);
+  MT_RUN(test_add_pack_reject_overlap);
+  MT_RUN(test_add_pack_reject_event_mismatch);
+  MT_RUN(test_add_pack_double_and_missing);
   return MT_RESULT() ? 0 : 1;
 }

@@ -104,6 +104,27 @@ JNIEXPORT jint JNICALL Java_mosaic_Bridge_workingSetCount(JNIEnv *env, jclass cl
   return rt != 0 ? (jint)mosaic_runtime_working_set_count(rt_of(rt)) : 0;
 }
 
+/* M4-3:世界内动态加载——向已打开实例追加 pack(零重启);0 成功,-1 失败
+   (错误码经 lastError;C 侧 errbuf 文案为诊断细节,错误语义取错误码)。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_runtimeAddPack(JNIEnv *env, jclass cls,
+                                                         jlong rt, jstring packPath) {
+  (void)cls;
+  if (rt == 0 || !packPath) return -1;
+  const char *cpath = (*env)->GetStringUTFChars(env, packPath, NULL);
+  if (!cpath) { throw_oom(env); return -1; }
+  char errbuf[256];
+  int rc = mosaic_runtime_add_pack(rt_of(rt), cpath, errbuf, sizeof errbuf);
+  (*env)->ReleaseStringUTFChars(env, packPath, cpath);
+  return rc == 0 ? 0 : -1;
+}
+
+/* 已挂载 pack 数;0 句柄 → 0。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_packCount(JNIEnv *env, jclass cls,
+                                                    jlong rt) {
+  (void)env; (void)cls;
+  return rt != 0 ? (jint)mosaic_runtime_pack_count(rt_of(rt)) : 0;
+}
+
 /* 最后错误码;0 句柄 → 0(C 核心对 NULL rt 返回 ERR_IO,不穿过)。 */
 JNIEXPORT jint JNICALL Java_mosaic_Bridge_lastError(JNIEnv *env, jclass cls,
                                                     jlong rt) {

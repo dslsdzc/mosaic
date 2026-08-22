@@ -168,7 +168,7 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("onServerTick", t); }
     }
 
-    /* ---- /mosaic status | test <event> [payload_int...] ---- */
+    /* ---- /mosaic status | install <pack path> | test <event> [payload_int...] ---- */
     private static void handleMosaic(String cmd) {
         String[] parts = cmd.split("\\s+");
         if (parts.length < 2) { usage(); return; }
@@ -176,6 +176,7 @@ public final class MosaicHooks {
         if (sub.equals("status")) {
             resolve();
             System.out.println("Mosaic agent: status functions=" + Bridge.functionCount(rt)
+                    + " packs=" + Bridge.packCount(rt)
                     + " working_set=" + Bridge.workingSetCount(rt)
                     + " last_error=" + Bridge.lastError(rt)
                     + " hooks_reflected=" + reflected);
@@ -184,6 +185,21 @@ public final class MosaicHooks {
                         + " event_id=" + EV_IDS[i]
                         + " calls=" + EV_CALLS[i]
                         + " executed=" + EV_EXEC[i]);
+            }
+        } else if (sub.equals("install")) {
+            /* M4-3:世界内动态加载——运行中挂载新 pack(零重启),挂载后下个
+               tick 的派发即覆盖其订阅者(dispatch 遍历 rt->packs) */
+            if (parts.length < 3) { usage(); return; }
+            String p = parts[2];
+            long before = Bridge.functionCount(rt);
+            int rc = Bridge.runtimeAddPack(rt, p);
+            if (rc == 0) {
+                long after = Bridge.functionCount(rt);
+                System.out.println("Mosaic agent: installed " + p
+                        + " (functions=" + before + "->" + after + ")");
+            } else {
+                System.out.println("Mosaic agent: install " + p
+                        + " failed (err=" + Bridge.lastError(rt) + ")");
             }
         } else if (sub.equals("test")) {
             if (parts.length < 3) { usage(); return; }
@@ -214,7 +230,7 @@ public final class MosaicHooks {
     }
 
     private static void usage() {
-        System.out.println("Mosaic agent: usage: /mosaic status | /mosaic test <event> [payload_int...]");
+        System.out.println("Mosaic agent: usage: /mosaic status | /mosaic install <pack path> | /mosaic test <event> [payload_int...]");
     }
 
     /* 事件索引 → 载荷(小端;长度 = include/mosaic/events.h 结构体大小) */
