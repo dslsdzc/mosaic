@@ -15,7 +15,7 @@
 | **M2** 事务/调度 | 依赖图闭包、事务 API(prepare/validate/commit/rollback=demote/abort)、函数级 generation 路由、状态迁移钩子(state_transform)、混合版本共存、DAG 调度器(线程池/优先级/亲和性/取消) | 完成:跨两次 commit 状态链 3→30→32→320→322 逐步可复核;1M 派发 1109.7s→4.0s(ws 键位混合) |
 | **M3** 合成世界 | 事件类型 API v1(205 事件目录 + 载荷签名 + 频率档)、合成世界模拟器、世界场景门禁 | 完成:生命周期全循环 58.7μs;稀疏订阅工作集 28,149/100,000(≪ 总数) |
 | **M4** 真实 MC | 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)、vanilla 1.20.1 集成、世界内动态加载 | 完成:服务端 tick→注入→bridge→C 派发活循环;运行中 install 新 pack 下个 tick 即生效,零重启 |
-| **M5** 兼容层 | Fabric/NeoForge mod 兼容 Provider | 暂缓 |
+| **M5** 稳定 API 面 | 31 大类 Java 接口(21 运行时域 + 10 原版域)、26.2/1.8.9 双代 Provider 契约、只增不减兼容套件 + 版本校验 + 全量门禁 | 完成:双代契约同套件全绿(API VERSION TEST + V1 SAMPLE OK);v1 签名被删/改 = 门禁红 |
 
 ## 设计
 
@@ -51,8 +51,9 @@ src/jni/         JVM Bridge(JNI 双向通道,M4-1)
 java/mosaic/     Java 稳定 API 面(mosaic.Bridge)
 agent/           自研注入引擎(javaagent + ClassFileTransformer + hooks,M4-2)
 bench/           合成宇宙 + S1-S5 基准 + 世界场景 + pack 生成器
-tests/           mini_test 单元/属性测试
-ci/              gates.sh·setup_mc_server.sh·build_mc_agent.sh·run_jni_test.sh
+tests/           mini_test 单元/属性测试 + tests/jni(JNI/契约/版本测试)
+compat/          v1 API 兼容样例(只增不减机器保证)
+ci/              gates.sh·setup_mc_versions.sh·run_vanilla_contract_*.sh·setup_mc_server.sh·build_mc_agent.sh·run_jni_test.sh
 ```
 
 ## 架构
@@ -173,6 +174,30 @@ tick 立即执行(世界内加载生效);重叠安装 world.pack(模块 1 与已
 `runtimeAddPack` 成功(函数数 3→5、派发 2→3)、重叠失败 -1 + `lastError`
 非 0、失败后函数数不变;`test_shards` 新增 4 个用例(挂载/重叠回滚/事件
 不一致/重复挂载)。
+
+## 稳定 API 面(M5)
+
+**31 大类 Java 接口**(21 运行时域 + 10 原版域,见 `java-api/mosaic/`):
+版本化基座(`MosaicApi.API_VERSION = 1`、`@Since` 标注引入版本、
+`requireApi` 超版本声明即抛 `MosaicApiVersionException`),实现经
+`mosaic.Bridge` JNI 接通 C 内核;原版域为句柄式稳定投影,零 MC 依赖。
+
+**双代 Provider**:同一契约套件(`tests/jni/vanilla/`,含
+`tests/jni/ApiContractTest.java` 运行时域断言)对 26.2 与 1.8.9 真实 jar
+分别运行——26.2 反射 + 版本映射,1.8.9 完全 MCP 反混淆 jar(类名+成员名
+均为 MCP 名;无该 jar 时回退 SRG 成员名 jar 并打 WARNING)。门禁顺序
+26.2 → 1.8.9,输出 `VANILLA CONTRACT PASSED (26.2)` /
+`VANILLA CONTRACT PASSED (1.8.9)`。
+
+**只增不减的机器保证**(`compat/v1-sample/`):v1 兼容样例只使用
+`API_VERSION 1` 引入的成员——任何 v1 签名被删除/修改 → 样例编译失败 →
+门禁红。`tests/jni/ApiVersionTest.java` 校验版本守卫(`requireApi(2)` 被
+拒绝)。`ci/gates.sh` 全量集成于全部既有门禁之后:输出
+`API VERSION TEST PASSED` + `V1 SAMPLE OK` 后才到达 `ALL CHECKS PASSED`。
+
+```bash
+bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 → 运行
+```
 
 ## 已知边界
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # M5-4:1.8.9 原版域契约测试——真实 1.8.9 jar(MCP 名,mcp918/temp/minecraft_rg.jar)
-# + 1.8.9 启动器依赖库(~/minecraft1.8.9/mc_install/libraries:guava-17.0/commons-lang3
-# 3.3.2/log4j-2.0-beta9/authlib-1.5.21 等,与 1.8.9 version json 一致;client/libs 仅有
-# lwjgl/jinput,故放于回退位)→ javac → java 断言。
+# + 1.8.9 启动器依赖库(mc_install/libraries 与 client/libs 两目录并集:guava-17.0/
+# commons-lang3 3.3.2/log4j-2.0-beta9/authlib-1.5.21/lwjgl/jinput 等,与 1.8.9
+# version json 一致)→ javac → java 断言。
 # 1.8.9 为 Java 8 字节码(ClassFile 52),JDK 25/26 可直接加载运行(实测,无版本专用 VM 参数)。
 # 退出码 0 = VANILLA CONTRACT PASSED (1.8.9)。
 set -euo pipefail
@@ -28,12 +28,19 @@ for c in ~/minecraft1.8.9/client/build/libs/Minecraft1.8.9-Client-1.8.9-uber.jar
   if [ -f "$c" ]; then JAR="$c"; break; fi
 done
 if [ -z "$JAR" ]; then
-  echo "run_vanilla_contract_189: 缺少 1.8.9 jar(~/.minecraft1.8.9/client/build/libs 或 lib/mc-versions/vanilla-1.8.9.jar)" >&2
+  echo "run_vanilla_contract_189: 缺少 1.8.9 jar(~/minecraft1.8.9/client/build/libs 或 lib/mc-versions/vanilla-1.8.9.jar)" >&2
   exit 3
 fi
 
-# 1.8.9 依赖库:官方启动器库树优先(mc_install/libraries 为 Maven 布局,递归收集;
-# client/libs 仅有 lwjgl/jinput,缺 guava/log4j 等,作回退)
+# 回退 jar(minecraft_rg.jar)成员名为 SRG,成员名不可直读 → 契约测试必然失败;
+# 打醒目警告提示提供 MCP uber jar。
+case "$JAR" in
+  */Minecraft1.8.9-Client-1.8.9-uber.jar) ;;
+  *) echo "WARNING: 回退 jar 成员名为 SRG,契约测试必然失败——请提供 MCP uber jar" >&2 ;;
+esac
+
+# 1.8.9 依赖库:取两目录并集——mc_install/libraries(Maven 布局,guava/log4j/
+# authlib 等)+ client/libs(lwjgl/jinput 等),递归收集
 LIBS=""
 for d in ~/minecraft1.8.9/mc_install/libraries ~/minecraft1.8.9/client/libs; do
   if [ -d "$d" ]; then

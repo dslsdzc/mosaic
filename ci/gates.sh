@@ -24,4 +24,12 @@ echo "=== vanilla provider contracts (dual-generation: 26.2 + 1.8.9) ==="
 bash ci/run_vanilla_contract_262.sh
 bash ci/run_vanilla_contract_189.sh
 
+echo "=== API version guard + v1 compat sample ==="
+# japi 同步回系统 JDK 字节码:vanilla 脚本以 JDK 25/26 编译(major 69/70),
+# 系统 javac/java(21)无法读取/加载;compat 套件不涉 MC jar,自编译自运行。
+javac -d build/japi java/mosaic/Bridge.java $(find java-api -name "*.java")
+javac -cp build/japi -d build/jcompat tests/jni/ApiVersionTest.java
+java -Djava.library.path=build/lib -cp build/japi:build/jcompat ApiVersionTest
+bash compat/v1-sample/run.sh
+
 echo "=== ALL CHECKS PASSED ==="
