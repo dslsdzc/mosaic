@@ -22,3 +22,6 @@ build-tsan/
 # M4-2: 下载的 vanilla 服务端 jar + ASM 库 + 生成的 world pack(可再生)
 mc-server/
 lib/
+
+# M5 Task 1: Provider 测试用的两代真实 jar(可再生)
+lib/mc-versions/
