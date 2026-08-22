@@ -112,6 +112,7 @@ public interface MosaicProvider {
 - **注册与选择**:加载期按当前 MC 版本选 Provider;无匹配 Provider → 拒绝加载,错误信息指明"需要 version X 的 Provider"。
 - **句柄持有原版引用**:`MosaicBlock` 实现内部持 26.2 的 `world.level.block.Block` 或 1.8.9 的 `block.Block`,接口方法读取时经 Provider 转换——转换只在读路径;写路径(操作原版)由 Provider 定义能力边界。
 - **双代对照测试**:域模型契约测试与版本无关(同一套用例),26.2 与 1.8.9 的类不能同 JVM——对照 = 同一套契约测试在两个 Provider 环境分别跑(CI 分两个测试任务,共享测试源码),断言同一域模型行为一致。
+- **测试环境**:逆向源码(`~/minecraft26.2/decompiled`、`~/minecraft1.8.9`)仅用于阅读与挑类;Provider 测试/实现的 classpath 用**对应版本的真实 jar**(26.2 服务端/客户端 jar、1.8.9 client jar)——逆向源码不可编译,真实 jar 的类文件才是运行依赖。
 - 1.8.9 Provider 职责边界:域模型只要求"共同能力"一致;1.8.9 没有的能力(component)在 1.8.9 环境下返回空/不可用语义(契约测试里标 since 的用例在该版本跳过)。
 
 ## 7. 版本机制(只增不减的落地)
