@@ -47,4 +47,9 @@ public class Vanilla189Env implements VanillaEnv {
     public Object registryObject() throws Exception {
         return ReflectUtil.fieldStatic("net.minecraft.block.Block", "blockRegistry");
     }
+    public Object inventoryObject() throws Exception {
+        // InventoryBasic(String, boolean, int):无 World 依赖(空槽 null);
+        // 构造签名核实 mcp918/src/minecraft/net/minecraft/inventory/InventoryBasic.java:19
+        return ReflectUtil.callConstructor("net.minecraft.inventory.InventoryBasic", "test", false, 5);
+    }
 }

@@ -43,4 +43,9 @@ public class Vanilla262Env implements VanillaEnv {
     public Object registryObject() throws Exception {
         return ReflectUtil.fieldStatic("net.minecraft.core.registries.BuiltInRegistries", "BLOCK");
     }
+    public Object inventoryObject() throws Exception {
+        // SimpleContainer(int):无 World 依赖(空槽 ItemStack.EMPTY);
+        // 构造签名核实 ~/minecraft26.2/decompiled/net/minecraft/world/SimpleContainer.java:18
+        return ReflectUtil.callConstructor("net.minecraft.world.SimpleContainer", 5);
+    }
 }

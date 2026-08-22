@@ -32,6 +32,20 @@ public class VanillaContractTest {
         check(item != null, "item handle");
         check(item.maxStackSize() >= 1, "maxStackSize >= 1");
 
+        // Inventory(真实路径:两代均可构造无 World 依赖容器——26.2 SimpleContainer / 1.8.9 InventoryBasic)
+        Object invObj = env.inventoryObject();
+        MosaicInventory inv = p.inventoryOf(invObj);
+        check(inv != null, "inventory handle");
+        int slotCount = inv.slotCount();
+        check(slotCount >= 0, "slotCount >= 0 (got " + slotCount + ")");
+        check(inv.size() == slotCount, "size == slotCount (size " + inv.size() + ", slotCount " + slotCount + ")");
+        // 空槽表示:26.2 为 ItemStack.EMPTY(Provider 转 null)、1.8.9 为 null —— 断言宽松但真实
+        MosaicItemStack emptySlot = inv.getItem(0);
+        check(emptySlot == null || emptySlot.count() == 0,
+                "empty slot getItem(0) null or empty stack (got "
+                        + (emptySlot == null ? "null" : "count " + emptySlot.count()) + ")");
+        check(inv.slot(0).isEmpty(), "slot(0).isEmpty() on empty slot");
+
         // NBT(两代语义最稳定)
         Object nbtObj = env.nbtObject();
         MosaicNbt nbt = p.nbtOf(nbtObj);
@@ -66,6 +80,23 @@ public class VanillaContractTest {
         check(dim != null && !dim.isEmpty(), "world dimension non-empty (got '" + dim + "')");
         check(world.entities().length == 0, "world entities empty");
         check(world.gameTime() == 0, "world gameTime 0 (got " + world.gameTime() + ")");
+
+        // Entity/Player(环境限制):两者需真实 Level 才能构造,契约环境不可构造——
+        // null 语义断言 + 真实路径待服务端环境(延续 world 的 null-safe 句柄先例)。
+        // 两代 Provider 对 entityOf(null)/playerOf(null) 均返回 null-safe 句柄(非 null),
+        // 句柄对 null 原版引用的字段默认值:type registryName "unknown"、name ""、
+        // gameMode -1、online false(经读 Vanilla262Provider/Vanilla189Provider 实现核实,双代一致)。
+        MosaicEntity e = p.entityOf(null);
+        check(e != null, "entityOf(null) null-safe handle");
+        MosaicEntityType et = e.type();
+        check(et != null && "unknown".equals(et.registryName()),
+                "entityOf(null) type registryName 'unknown' (got '"
+                        + (et == null ? "null" : et.registryName()) + "')");
+        MosaicPlayer player = p.playerOf(null);
+        check(player != null, "playerOf(null) null-safe handle");
+        check("".equals(player.name()), "playerOf(null) name '' (got '" + player.name() + "')");
+        check(player.gameMode() == -1, "playerOf(null) gameMode -1 (got " + player.gameMode() + ")");
+        check(!player.online(), "playerOf(null) online false");
 
         if (failures == 0) System.out.println("VANILLA CONTRACT PASSED (" + p.mcVersion() + ")");
         System.exit(failures == 0 ? 0 : 1);
