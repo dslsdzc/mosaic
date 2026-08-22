@@ -1,6 +1,13 @@
 import mosaic.MosaicApi;
+import mosaic.MosaicProviderNotFoundException;
 import mosaic.runtime.*;
+import mosaic.runtime.internal.CapabilityImpl;
 import mosaic.runtime.internal.Native;
+
+/** Task 5 评审:Capability 域契约(注册 → require 命中 → optional miss → require miss 抛)。 */
+class TestCapability implements MosaicCapability {
+    String tag() { return "cap"; }
+}
 
 public class ApiContractTest {
     static int failures = 0;
@@ -116,6 +123,18 @@ public class ApiContractTest {
         sr.register(Runnable.class, () -> {});
         check(sr.get(Runnable.class) != null, "service get");
         check(sr.optional(String.class) == null, "service optional miss");
+
+        // 能力注册表(纯 Java;注册在 internal 实现上,查询接口 query-only)
+        CapabilityImpl caps = (CapabilityImpl) rt.capability();
+        caps.register(TestCapability.class, new MosaicCapabilityProvider() {
+            @SuppressWarnings("unchecked")
+            public <T extends MosaicCapability> T provide(Class<T> type) { return (T) new TestCapability(); }
+        });
+        check(caps.require(TestCapability.class) != null, "capability require hit");
+        check(caps.require(TestCapability.class).tag().equals("cap"), "capability provider invoked");
+        check(caps.optional(MosaicCapability.class) == null, "capability optional miss");
+        try { caps.require(MosaicCapability.class); check(false, "capability require miss should throw"); }
+        catch (MosaicProviderNotFoundException e) { check(true, "capability require miss throws"); }
 
         // 查询(创造模式)
         MosaicQueryBuilder qb = rt.query();

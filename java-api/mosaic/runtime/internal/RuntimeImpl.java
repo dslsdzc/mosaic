@@ -16,6 +16,7 @@ public final class RuntimeImpl implements MosaicRuntime {
     private final SchedulerImpl scheduler = new SchedulerImpl();
     private final ResourceManagerImpl resources = new ResourceManagerImpl(this);
     private final ServiceRegistryImpl services = new ServiceRegistryImpl();
+    private final CapabilityImpl capabilities = new CapabilityImpl();
     private final QueryBuilderImpl queryBuilder = new QueryBuilderImpl(index);
 
     private RuntimeImpl(long rt) { this.rt = rt; }
@@ -54,4 +55,5 @@ public final class RuntimeImpl implements MosaicRuntime {
     public MosaicQueryBuilder query() { return queryBuilder; }
     public MosaicTransaction txBegin(String patchPath) { return TxImpl.begin(rt, patchPath); }
     public MosaicActivationGate activation() { return gate; }
+    public MosaicCapabilityQuery capability() { return capabilities; }
 }

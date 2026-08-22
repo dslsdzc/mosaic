@@ -33,6 +33,33 @@ if [ -f lib/mc-versions/vanilla-26.2.jar ]; then
   fi
 fi
 
+# 26.2 游戏 jar 是 bundler 的嵌套部分,不含 Mojang 运行时库(LogUtils/DataResult/
+# authlib/brigadier/fastutil/guava 等)。按官方 version json 的 libraries.downloads
+# 下载全部主构件(跳过 natives)到 libs/,供 Provider 测试作 classpath(幂等:已有即跳过)。
+if [ -f lib/mc-versions/vanilla-26.2.jar ] \
+   && ! ls lib/mc-versions/libs/*.jar >/dev/null 2>&1; then
+  echo "26.2: 下载 Mojang 运行时库(libraries.downloads.artifact)..."
+  mkdir -p lib/mc-versions/libs
+  VURL=$(curl -s https://piston-meta.mojang.com/mc/game/version_manifest_v2.json \
+      | jq -r '.versions[] | select(.id=="26.2") | .url' | head -1)
+  if [ -n "$VURL" ] && [ "$VURL" != "null" ]; then
+    python3 - "$VURL" <<'PY' | while read -r URL; do
+import json, sys, urllib.request
+d = json.load(urllib.request.urlopen(sys.argv[1]))
+for l in d.get("libraries", []):
+    a = l.get("downloads", {}).get("artifact")
+    if a: print(a["url"])
+PY
+      [ -z "$URL" ] || curl -fsSL "$URL" -o "lib/mc-versions/libs/$(basename "$URL")" || true
+    done
+  fi
+  if ls lib/mc-versions/libs/*.jar >/dev/null 2>&1; then
+    echo "26.2: $(ls lib/mc-versions/libs/*.jar | wc -l) 个库就位"
+  else
+    echo "26.2: 库下载失败(无网络?),回退 ~/.minecraft/libraries(可能版本不符)" >&2
+  fi
+fi
+
 # 1.8.9:优先取用户逆向目录中 MCP 反混淆命名 jar(含 MCP 类名,可作可读 classpath);
 #       无则回退任意大 jar(通用 find)
 if [ ! -f lib/mc-versions/vanilla-1.8.9.jar ]; then

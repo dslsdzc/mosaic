@@ -35,4 +35,6 @@ public interface MosaicRuntime {
     MosaicTransaction txBegin(String patchPath);
     /** 激活策略门(纯 Java 策略持有)。 */
     MosaicActivationGate activation();
+    /** 能力注册表查询(纯 Java 层;require=必需,optional=可选)。 */
+    MosaicCapabilityQuery capability();
 }

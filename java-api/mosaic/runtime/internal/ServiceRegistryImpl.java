@@ -2,7 +2,6 @@ package mosaic.runtime.internal;
 
 import java.util.concurrent.ConcurrentHashMap;
 import mosaic.MosaicProviderNotFoundException;
-import mosaic.runtime.MosaicService;
 import mosaic.runtime.MosaicServiceRegistry;
 
 /** 服务注册/发现(纯 Java 层;get = 必需,缺失抛 ProviderNotFound)。

@@ -25,3 +25,6 @@ lib/
 
 # M5 Task 1: Provider 测试用的两代真实 jar(可再生)
 lib/mc-versions/
+
+# 26.2 jar 引导时 Bootstrap.wrapStreams 写出的服务端日志(每次运行可再生)
+logs/
