@@ -49,13 +49,18 @@ import java.lang.reflect.Method;
  *   - net.minecraft.server.MinecraftServer           -> 未混淆
  *       tickServer(BooleanSupplier)                  -> a      (desc (Ljava/util/function/BooleanSupplier;)V)
  *       getTickCount()                               -> ag
- *   - 反射用(M8-D 新增已核实):Entity.getId() -> bfj.af()、Entity.getType() ->
- *     bfj.ae()、EntityType.getId() -> bfn.a()、Entity.getX/Y/Z() ->
- *     bfj.dn/dp/dt()、BlockPos.asLong() -> gu.a()、BlockPos.getX/Y/Z(long) ->
- *     gu.a/b/c(J)、Level.getBlockState(BlockPos) -> cmm.a_(Lgu;)(aif 继承)、
+ *   - 反射用(M8-D 新增已核实;2026-08-23 M8-D 评审修正):Entity.getId() ->
+ *     bfj.af()、Entity.getX/Y/Z() -> bfj.dn/dp/dt()、BlockPos.asLong() ->
+ *     gu.a()、BlockPos.getX/Y/Z(long) -> gu.a/b/c(J)、
+ *     Level.getBlockState(BlockPos) -> cmm.a_(Lgu;)(aif 继承)、
  *     Block.getId(BlockState) -> cpn.i(Ldcb;)、UseOnContext(BlockPlaceContext
  *     父类)getPlayer/getClickedPos -> cij.o()/cij.a()、
- *     ParseResults.getContext()/CommandContext.getSource()(brigadier 未混淆)
+ *     ParseResults.getContext() -> CommandContextBuilder、
+ *     CommandContextBuilder.getSource()(brigadier 未混淆,javap 实测)。
+ *     [修正] 1.20.1 EntityType 无 getId():bfn.a() 实为
+ *     a()Ljava/lang/Class; = mojmap getBaseClass()(javap 实测;此前误作
+ *     EntityType.getId)——注册 id 需 BuiltInRegistries.ENTITY_TYPE 访问
+ *     (混淆名待后续核实),entity_type 载荷暂为 0(记录为后续项)
  *
  * 载荷(小端 LE,与 include/mosaic/events.h 一致):
  *   player_join/player_leave/tick/player_chat/player_death = 4B u32;
@@ -84,9 +89,9 @@ public final class MosaicHooks {
     private static Method M_GET_X, M_GET_Y, M_GET_Z;  /* gu.a/b/c(J)I */
     private static Method M_BLOCK_ID;      /* cpn.i(Ldcb;)I */
     private static Method M_TICK_COUNT;    /* MinecraftServer.ag()I */
-    /* M8-D:entity_spawn 载荷 */
-    private static Method M_ENTITY_TYPE;   /* bfj.ae()Lbfn; (Entity.getType) */
-    private static Method M_ENTITY_TYPE_ID;/* bfn.a()I (EntityType.getId) */
+    /* M8-D:entity_spawn 载荷(1.20.1 EntityType 无 getId();注册 id 需
+       BuiltInRegistries.ENTITY_TYPE(混淆名待后续核实),
+       此处 entity_type 暂为 0 —— 记录为后续项) */
     private static Method M_ENT_X, M_ENT_Y, M_ENT_Z;  /* bfj.dn/dp/dt()D */
     /* M8-D:player_chat 载荷(aiy 的 player 字段) */
     private static Field  F_AIY_PLAYER;    /* aiy.b (ServerGamePacketListenerImpl.player) */
@@ -95,7 +100,7 @@ public final class MosaicHooks {
     private static Method M_CTX_POS;       /* cij.a()Lgu; (getClickedPos) */
     /* M8-D:chat 命令 source 提取(brigadier 未混淆,但由 bundler 加载器加载) */
     private static Method M_PARSE_CTX;     /* ParseResults.getContext() */
-    private static Method M_CTX_SRC;       /* CommandContext.getSource() */
+    private static Method M_CTX_SRC;       /* CommandContextBuilder.getSource() */
     private static boolean reflected = false;
     private static boolean resolveWarned = false;
 
@@ -128,9 +133,8 @@ public final class MosaicHooks {
             M_GET_Z = gu.getMethod("c", long.class);
             M_BLOCK_ID = clazz("cpn").getMethod("i", clazz("dcb"));
             M_TICK_COUNT = clazz("net.minecraft.server.MinecraftServer").getMethod("ag");
-            /* M8-D:entity_spawn */
-            M_ENTITY_TYPE = clazz("bfj").getMethod("ae");
-            M_ENTITY_TYPE_ID = clazz("bfn").getMethod("a");
+            /* M8-D:entity_spawn(x/y/z;entity_type 载荷暂为 0——bfn.a() 实为
+               getBaseClass()Ljava/lang/Class;,1.20.1 EntityType 无 getId) */
             M_ENT_X = clazz("bfj").getMethod("dn");
             M_ENT_Y = clazz("bfj").getMethod("dp");
             M_ENT_Z = clazz("bfj").getMethod("dt");
@@ -140,9 +144,13 @@ public final class MosaicHooks {
             /* M8-D:block_place(cij = UseOnContext,BlockPlaceContext 父类) */
             M_CTX_PLAYER = clazz("cij").getMethod("o");
             M_CTX_POS = clazz("cij").getMethod("a");
-            /* M8-D:chat 命令 source(brigadier 未混淆,按名字反射) */
+            /* M8-D:chat 命令 source(brigadier 未混淆,按名字反射;javap 实测
+               brigadier-1.1.8:ParseResults.getContext() 返回
+               CommandContextBuilder(而非 CommandContext),其上有 getSource()——
+               此前在 CommandContext 上查找 getSource,invoke 必然
+               IllegalArgumentException 被内层 catch 吞掉) */
             M_PARSE_CTX = clazz("com.mojang.brigadier.ParseResults").getMethod("getContext");
-            M_CTX_SRC = clazz("com.mojang.brigadier.context.CommandContext").getMethod("getSource");
+            M_CTX_SRC = clazz("com.mojang.brigadier.context.CommandContextBuilder").getMethod("getSource");
             reflected = true;
             System.out.println("Mosaic agent: hook reflection ready");
         } catch (Throwable t) {
@@ -209,7 +217,9 @@ public final class MosaicHooks {
 
     /* ---- 注入 hook:游戏内聊天命令(M8-D;dt.a(ParseResults,String) =
        performCommand(ParseResults,String) 入口;signature 无 CommandSourceStack
-       参数,从 ParseResults.getContext().getSource() 反射提取) ---- */
+       参数,从 ParseResults.getContext()(= CommandContextBuilder,javap 实测)
+       .getSource() 反射提取;提取值当前被丢弃,但链路必须正确——feedback
+       通道为后续项) ---- */
     public static boolean onChatCommand(Object results, String cmd) {
         try {
             /* 提取 source(失败不阻断:/mosaic 处理不依赖 source) */
@@ -267,8 +277,9 @@ public final class MosaicHooks {
             if (!reflected) return;
             byte[] b = new byte[20];
             putIntLE(b, 0, (Integer) M_ID.invoke(e));
-            Object type = M_ENTITY_TYPE.invoke(e);
-            putIntLE(b, 4, type == null ? 0 : (Integer) M_ENTITY_TYPE_ID.invoke(type));
+            /* 1.20.1 EntityType 无 getId();注册 id 需 BuiltInRegistries.ENTITY_TYPE
+               (混淆名待后续核实),此处 entity_type 暂为 0 —— 记录为后续项 */
+            putIntLE(b, 4, 0);
             putIntLE(b, 8, (int) Math.floor((Double) M_ENT_X.invoke(e)));
             putIntLE(b, 12, (int) Math.floor((Double) M_ENT_Y.invoke(e)));
             putIntLE(b, 16, (int) Math.floor((Double) M_ENT_Z.invoke(e)));

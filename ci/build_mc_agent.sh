@@ -12,6 +12,9 @@ cd "$(dirname "$0")/.."
 bash ci/setup_mc_server.sh
 cmake --build build -j --target mosaic_jni >/dev/null
 
+SERV_JAR=mc-server/minecraft_server.1.20.1.jar
+ASM_JAR=lib/asm.jar
+
 rm -rf build/agentclasses build/asmclasses build/lib/mosaic-agent.jar
 mkdir -p build/agentclasses build/asmclasses build/lib
 
@@ -52,6 +55,25 @@ jar cfm build/lib/mosaic-agent.jar agent/META-INF/MANIFEST.MF \
 
 echo "[agent] embedding libmosaic_jni.so..."
 (cd build/lib && zip -q mosaic-agent.jar libmosaic_jni.so)
+
+# 字节码注入校验(M8-D 评审 Issue-5 固化):真实 server.jar 类字节跑真实
+# transformer,ASM 扫描输出中的 invokestatic MosaicHooks.* —— 注入点签名
+# 漂移(混淆名/desc 变化)立即 MISS 报错。注:transform 的 loader 参数为系统
+# 加载器,帧公共父类解析回退 Object(精度下降但注入检测不受影响,输出字节
+# 由 ClassReader 重读冒烟)。
+echo "[agent] bytecode injection check (server.jar classes + real transformer)..."
+# 1.20.1 官方 jar 是 bundler 自解压格式,真实服务端类在嵌套 jar 里
+mkdir -p build/injectcheck
+unzip -o -q "$SERV_JAR" 'META-INF/versions/1.20.1/server-1.20.1.jar' -d build/injectcheck
+INNER_JAR=build/injectcheck/META-INF/versions/1.20.1/server-1.20.1.jar
+javac -cp "$ASM_JAR":build/agentclasses -d build/injectcheck \
+    ci/injectcheck/InjectCheck.java
+java -cp "$ASM_JAR":build/agentclasses:build/injectcheck \
+    InjectCheck "$INNER_JAR" | tee build/injectcheck/result.txt
+if ! grep -q "ALL INJECTED" build/injectcheck/result.txt; then
+    echo "[agent] ERROR: injection check failed (SPEC drift?)" >&2
+    exit 1
+fi
 
 echo "[agent] done: build/lib/mosaic-agent.jar"
 ls -la build/lib/mosaic-agent.jar

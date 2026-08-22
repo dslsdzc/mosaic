@@ -160,11 +160,18 @@ public final class MosaicTransformer implements ClassFileTransformer {
                class definition" LinkageError(实测:转换 aig(ServerPlayer)时
                其方法帧合并需要 commonSuper(aig, bfj),Class.forName("aig")
                重入即崩;M8-D 新增 aig 转换后触发)。处理:把 current 替换为
-               其直接父类(父类在子类 defineClass 前必已加载,可安全加载;
-               vanilla 无类继承 aig/aiy/cds/aif,故 LUB(current,t2) =
-               LUB(super(current),t2))。注意不能简单回退 Object——帧合并
-               类型被放宽后,下游 putfield/invokevirtual 仍按 bfj 校验会
-               VerifyError(实测 aig.c(Lbfj;)V)。 */
+               其直接父类(父类在子类 defineClass 前必已加载,可安全加载)。
+               [M8-D 评审修正 2026-08-23] 原注释"vanilla 无类继承
+               aig/aiy/cds/aif"不实——javap 全量扫描 server-1.20.1.jar
+               (5440 类)复核:aig(ServerPlayer)有子类 pq$3,cds(BlockItem)
+               有 10 个子类(cdr/cem/cfi/cfl/cfy/cgm/cgt/cgz/chd/chi,8 直接);
+               aif/aiy 无子类(评审所举 dgu$d 实为 interface,"6 类继承 aif"
+               未复现)。但子类类型不参与被转换类自身帧合并(帧合并仅涉及
+               current 方法栈上的类型,current 自身按直接父类参与),故
+               LUB(current,t2)=LUB(super(current),t2) 对该场景依然成立。
+               注意不能简单回退 Object——帧合并类型被放宽后,下游
+               putfield/invokevirtual 仍按 bfj 校验会 VerifyError
+               (实测 aig.c(Lbfj;)V)。 */
             final String[] currentSuper = {null};
             try {
                 new ClassReader(classfileBuffer).accept(new ClassVisitor(Opcodes.ASM9) {
