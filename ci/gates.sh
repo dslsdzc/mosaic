@@ -20,4 +20,8 @@ build/bench/bench_runner 100000000 2>/dev/null "" "" "" 100
 echo "=== world scenarios (100k fns, 10 entities, 1000 ticks) ==="
 build/bench/world_bench
 
+echo "=== vanilla provider contracts (dual-generation: 26.2 + 1.8.9) ==="
+bash ci/run_vanilla_contract_262.sh
+bash ci/run_vanilla_contract_189.sh
+
 echo "=== ALL CHECKS PASSED ==="

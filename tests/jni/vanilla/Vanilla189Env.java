@@ -1,0 +1,50 @@
+import mosaic.vanilla.*;
+import mosaic.vanilla.internal.ReflectUtil;
+import mosaic.vanilla.internal.Vanilla189Provider;
+
+/** 1.8.9 环境:MCP 名反射构造。
+ *  - 注册引导:26.2 为 Bootstrap.bootStrap(),1.8.9 为 Bootstrap.register()(init 包);
+ *    Blocks/Items 静态字段初始化校验 Bootstrap.isRegistered(),必须先 register;
+ *    register() → Block.registerBlocks() + Item.registerItems() + StatList.init() 等;
+ *  - Block/Item:Blocks.stone / Items.diamond(1.8.9 为 Block/Item 直接实例);
+ *  - NBT:NBTTagCompound 无参构造;
+ *  - Registry:Block.blockRegistry(RegistryNamespacedDefaultedByKey,默认值 air)。
+ *    不用 Item.itemRegistry:逆向核实 1.8.9 itemRegistry 无 "air" 条目,而契约测试
+ *    "default-registered air resolves" 要求 air 可解析——blockRegistry 含 air(id 0)
+ *    与 stone(id 1),id↔名双向,是契约所需的 1.8.9 注册表形态;
+ *  - World:1.8.9 存在静态 MinecraftServer.getServer(),但契约环境无运行中服务端
+ *    → 返回 null → 回退维度令牌 Integer(0)(dimensionId 0 = Overworld)。
+ *    26.2 以 Level.OVERWORLD 令牌、1.8.9 以 dimensionId 令牌,Provider 均合成
+ *    "minecraft:overworld",双代同值;真实 World 路径在运行中服务端照常生效。 */
+public class Vanilla189Env implements VanillaEnv {
+    public Vanilla189Env() throws Exception {
+        // 注册入口:Bootstrap.register()(Block.registerBlocks + Item.registerItems ...)
+        Class.forName("net.minecraft.init.Bootstrap").getMethod("register").invoke(null);
+    }
+
+    public MosaicProvider provider() {
+        Vanilla189Provider p = new Vanilla189Provider();
+        MosaicProviderRegistry.register(p);
+        return p;
+    }
+    public Object worldObject() throws Exception {
+        Object server = ReflectUtil.callStatic("net.minecraft.server.MinecraftServer", "getServer");
+        if (server != null) {
+            Object world = ReflectUtil.call(server, "worldServerForDimension", 0);
+            if (world != null) return world;
+        }
+        return Integer.valueOf(0);   // 维度令牌:dimensionId 0 = Overworld(契约环境无运行中服务端)
+    }
+    public Object blockObject() throws Exception {
+        return ReflectUtil.fieldStatic("net.minecraft.init.Blocks", "stone");
+    }
+    public Object itemObject() throws Exception {
+        return ReflectUtil.fieldStatic("net.minecraft.init.Items", "diamond");
+    }
+    public Object nbtObject() throws Exception {
+        return Class.forName("net.minecraft.nbt.NBTTagCompound").getDeclaredConstructor().newInstance();
+    }
+    public Object registryObject() throws Exception {
+        return ReflectUtil.fieldStatic("net.minecraft.block.Block", "blockRegistry");
+    }
+}
