@@ -12,6 +12,7 @@ public final class V1SampleMod {
         long n = rt.functionCount();
         int join = rt.eventId("player_join");
         int executed = rt.eventDispatch(join, new byte[4]);
+        if (n != 3 || executed != 2) { System.exit(1); }   /* 运行断言:门禁同时校验行为值 */
         MosaicFunctionLifecycle lc = rt.lifecycle();
         long h = lc.materialize(0x100000000L);
         byte[] st = lc.state(h);
