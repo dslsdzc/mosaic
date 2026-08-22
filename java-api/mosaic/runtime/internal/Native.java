@@ -21,6 +21,11 @@ public final class Native {
         mosaic.Bridge.fnExecute(rt, fnHandle, eventId, payload); }
     public static byte[] fnState(long rt, long fnHandle) { return mosaic.Bridge.fnState(rt, fnHandle); }
     public static long fnIdOf(long rt, long fnHandle) { return mosaic.Bridge.fnIdOf(rt, fnHandle); }
+    /* M6-B:状态写 / 触发订阅者列出(一行委托) */
+    public static int fnStateWrite(long rt, long fnHandle, byte[] state) {
+        return mosaic.Bridge.fnStateWrite(rt, fnHandle, state); }
+    public static int triggerSubscribers(long rt, int eventId, long[] out) {
+        return mosaic.Bridge.triggerSubscribers(rt, eventId, out); }
 
     public static long packCreate(String path, long mc, long fc, long tc, long dc, int ec) {
         return mosaic.Bridge.packCreate(path, mc, fc, tc, dc, ec); }

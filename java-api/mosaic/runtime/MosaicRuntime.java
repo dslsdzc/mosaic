@@ -40,4 +40,10 @@ public interface MosaicRuntime {
     /** 自诊断桥(Java↔C 内核通道):native 句柄与错误槽直读。 */
     @Since(1)
     MosaicBridge bridge();
+    /** 函数状态存储(状态域):forFn(fnId) → 函数状态读写。 */
+    @Since(1)
+    MosaicStateStore stateStore();
+    /** 触发索引(事件 → 订阅函数 id 区间)。 */
+    @Since(1)
+    MosaicTriggerIndex triggerIndex();
 }

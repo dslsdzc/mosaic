@@ -6,6 +6,8 @@ import mosaic.runtime.*;
 import mosaic.runtime.internal.CapabilityImpl;
 import mosaic.runtime.internal.EventPayloadImpl;
 import mosaic.runtime.internal.Native;
+import mosaic.runtime.internal.StateTransformImpl;
+import mosaic.runtime.internal.TriggerEntryImpl;
 
 /** Task 5 评审:Capability 域契约(注册 → require 命中 → optional miss → require miss 抛)。 */
 class TestCapability implements MosaicCapability {
@@ -181,6 +183,70 @@ public class ApiContractTest {
         MosaicQueryBuilder qb = rt.query();
         MosaicQuery q = qb.byCategory(0);
         check(q != null, "query by category");
+
+        // ---- M6-B:状态域(函数状态读写 / 状态存储 / 状态迁移)----
+        // fn(1,1)(code_add:counter += 载荷 u32)此前载荷全零 → counter 仍为 0;
+        // execute({1,0,0,0}) ×1 后 state[0]==1(读回环起点)
+        long rtH = rt.bridge().nativeHandle();
+        long fw = lc.materialize(0x100000001L);
+        check(fw != 0, "M6B materialize fn(1,1)");
+        lc.execute(fw, join, new byte[]{1, 0, 0, 0});
+        byte[] stW = lc.state(fw);
+        check(java.nio.ByteBuffer.wrap(stW).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(0) == 1,
+              "M6B state[0]==1 after 1 exec");
+
+        // fnStateWrite 直通:写入 {42,0,...} → 读回 state[0]==42
+        byte[] ov = new byte[64];
+        ov[0] = 42;
+        check(Native.fnStateWrite(rtH, fw, ov) == 0, "M6B fnStateWrite==0");
+        byte[] stW2 = lc.state(fw);
+        check(stW2[0] == 42, "M6B state[0]==42 after write, got " + (stW2[0] & 0xff));
+
+        // 超长写入(> state_size=64)拒绝 → -1
+        check(Native.fnStateWrite(rtH, fw, new byte[65]) == -1,
+              "M6B fnStateWrite over-length rejected (-1)");
+
+        // stateStore().forFn(fnId) 读写(公共 API 路径)
+        MosaicStateStore store = rt.stateStore();
+        MosaicFunctionState fs = store.forFn(0x100000001L);
+        byte[] stR = fs.read(0x100000001L);
+        check(stR != null && stR.length == 64 && stR[0] == 42,
+              "M6B stateStore read == 42");
+        byte[] ov2 = new byte[64];
+        ov2[0] = 7;
+        fs.write(0x100000001L, ov2);
+        byte[] stW3 = lc.state(fw);
+        check(stW3[0] == 7, "M6B stateStore write → state[0]==7, got " + (stW3[0] & 0xff));
+        check(fs.read(0x99999999L) == null, "M6B stateStore read unknown fn → null");
+        try { fs.write(0x100000001L, new byte[128]); check(false, "M6B store write over-length should throw"); }
+        catch (MosaicHandleException e) { check(true, "M6B store write over-length throws"); }
+
+        // 状态迁移钩子(纯 Java 语义)
+        MosaicStateTransform noop = StateTransformImpl.noop();
+        byte[] v1 = {1, 2, 3, 4};
+        byte[] v2 = new byte[8];
+        noop.transform(v1, v2, 8);
+        check(v2[0] == 1 && v2[3] == 4 && v2[4] == 0 && v2[7] == 0,
+              "M6B noop transform copies prefix, zero tail");
+        byte[] v4 = new byte[2];
+        noop.transform(v1, v4, 2);
+        check(v4[0] == 1 && v4[1] == 2, "M6B noop transform size=2 truncates");
+        MosaicStateTransform bump = (src, dst, sz) -> { noop.transform(src, dst, sz); dst[0] = (byte) (dst[0] + 1); };
+        byte[] v3 = new byte[8];
+        bump.transform(v1, v3, 8);
+        check(v3[0] == 2 && v3[1] == 2 && v3[2] == 3 && v3[3] == 4,
+              "M6B custom transform bump[0] → 2, got " + v3[0]);
+
+        // ---- M6-B:触发域(事件 → 订阅函数 id 索引)----
+        MosaicTriggerIndex ti = rt.triggerIndex();
+        long[] subs = ti.subscribers(join);   // gen_test_pack:player_join 2 触发器
+        check(subs.length == 2, "M6B subscribers(player_join)==2, got " + subs.length);
+        check(subs.length >= 2 && subs[0] == 0x100000000L && subs[1] == 0x100000001L,
+              "M6B subscribers are fn(1,0)/fn(1,1) sorted, got " + Arrays.toString(subs));
+        check(ti.subscribers(12345).length == 0, "M6B unregistered event → empty array");
+        MosaicTriggerEntry te = new TriggerEntryImpl(join, 0x100000000L);
+        check(te.eventId() == join && te.fnId() == 0x100000000L,
+              "M6B TriggerEntry data class eventId/fnId");
 
         rt.close();
 

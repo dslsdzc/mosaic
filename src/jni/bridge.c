@@ -187,6 +187,63 @@ JNIEXPORT jlong JNICALL Java_mosaic_Bridge_fnIdOf(JNIEnv *env, jclass c, jlong r
   mosaic_fn_obj *fn = (mosaic_fn_obj *)(intptr_t)h;
   return fn ? (jlong)fn->fn_id : 0;
 }
+/* M6-B:写函数状态(物化后)。校验:句柄有效、state 非空、len <= fn->state_size
+   (超长拒绝);通过则 memcpy len 字节到 fn->state(尾随字节保持原样,语义 =
+   Java 侧按 state_size 整块写)。失败 → -1 + last_err(ILLEGAL)。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_fnStateWrite(JNIEnv *env, jclass c, jlong rt_, jlong h,
+                                                       jbyteArray state) {
+  (void)c;
+  mosaic_runtime *rt = (mosaic_runtime *)(intptr_t)rt_;
+  mosaic_fn_obj *fn = (mosaic_fn_obj *)(intptr_t)h;
+  if (!rt || !fn || !fn->state || !state) return -1;
+  jsize len = (*env)->GetArrayLength(env, state);
+  if (len < 0 || (u32)len > fn->state_size) { rt->last_err = MOSAIC_ERR_ILLEGAL; return -1; }
+  jbyte *buf = (*env)->GetByteArrayElements(env, state, NULL);
+  if (!buf) { throw_oom(env); return -1; }
+  memcpy(fn->state, buf, (size_t)len);
+  (*env)->ReleaseByteArrayElements(env, state, buf, JNI_ABORT); /* 只读源,不拷贝回 */
+  return 0;
+}
+/* M6-B:列出事件订阅者 fn_id(触发表区间扫描;与 dispatch 同纪律:仅基础 pack,
+   逐 pack 现算 map + trigger_lower_bound 二分到事件区间,再顺序收集)。
+   out == NULL → 探测模式,返回订阅者总数;out != NULL → 填充 min(cap, 总数)
+   条,返回实际写入数(容量不足截断)。无订阅/事件未注册 → 0。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_triggerSubscribers(JNIEnv *env, jclass c, jlong rt_,
+                                                             jint eventId, jlongArray out) {
+  (void)c;
+  mosaic_runtime *rt = (mosaic_runtime *)(intptr_t)rt_;
+  if (!rt) return -1;
+  if (!out) {                          /* 探测:总数 */
+    u64 total = 0;
+    for (size_t p = 0; p < rt->n_packs; p++) {
+      u8 *map = pack_map(rt, p);
+      u64 n = hdr_trigger_count(map);
+      u64 i = trigger_lower_bound(map, (u32)eventId);
+      const mosaic_trigger_entry *t =
+          (const mosaic_trigger_entry *)(map + hdr_trigger_off(map));
+      while (i < n && mt_event_id(&t[i]) == (u32)eventId) { total++; i++; }
+    }
+    return (jint)total;
+  }
+  jsize cap = (*env)->GetArrayLength(env, out);
+  if (cap <= 0) return 0;
+  jlong *buf = (*env)->GetLongArrayElements(env, out, NULL);
+  if (!buf) { throw_oom(env); return -1; }
+  jsize written = 0;
+  for (size_t p = 0; p < rt->n_packs && written < cap; p++) {
+    u8 *map = pack_map(rt, p);
+    u64 n = hdr_trigger_count(map);
+    u64 i = trigger_lower_bound(map, (u32)eventId);
+    const mosaic_trigger_entry *t =
+        (const mosaic_trigger_entry *)(map + hdr_trigger_off(map));
+    while (i < n && mt_event_id(&t[i]) == (u32)eventId && written < cap) {
+      buf[written++] = (jlong)mt_fn_id(&t[i]);
+      i++;
+    }
+  }
+  (*env)->ReleaseLongArrayElements(env, out, buf, 0);
+  return (jint)written;
+}
 /* ===== M5:pack 构建器(直通 C builder) ===== */
 JNIEXPORT jlong JNICALL Java_mosaic_Bridge_packCreate(JNIEnv *env, jclass c, jstring path,
     jlong mc, jlong fc, jlong tc, jlong dc, jint ec) {

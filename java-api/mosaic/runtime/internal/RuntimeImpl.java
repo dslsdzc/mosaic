@@ -24,6 +24,9 @@ public final class RuntimeImpl implements MosaicRuntime {
     private final CapabilityImpl capabilities = new CapabilityImpl();
     private final QueryBuilderImpl queryBuilder = new QueryBuilderImpl(index);
     private final BridgeImpl bridge = new BridgeImpl(this);
+    /* M6-B:状态域 / 触发域(每运行时单例) */
+    private final StateStoreImpl stateStore = new StateStoreImpl(this);
+    private final TriggerIndexImpl triggerIndex = new TriggerIndexImpl(this);
 
     private RuntimeImpl(long rt) {
         this.rt = rt;
@@ -72,4 +75,6 @@ public final class RuntimeImpl implements MosaicRuntime {
     public MosaicActivationGate activation() { return gate; }
     public MosaicCapabilityQuery capability() { return capabilities; }
     public MosaicBridge bridge() { return bridge; }
+    public MosaicStateStore stateStore() { return stateStore; }
+    public MosaicTriggerIndex triggerIndex() { return triggerIndex; }
 }

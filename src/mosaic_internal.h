@@ -141,6 +141,10 @@ const mosaic_function_record *find_function_ex(mosaic_runtime *rt, u64 fn_id, si
 const mosaic_function_record *find_function_active(mosaic_runtime *rt, u64 fn_id, size_t *out_pack);
 const mosaic_module_record *find_module_active(mosaic_runtime *rt, u64 module_id, size_t *out_pack);
 
+/* trigger.c — 触发表下界(第一个 event_id >= ev 的条目下标;逐 pack 区间扫描
+   用)。M6-B:bridge.c(triggerSubscribers 列出事件订阅者)复用,免复制二分。 */
+u64 trigger_lower_bound(const u8 *map, u32 ev);
+
 /* runtime.c — 布局/事件表校验(M2-2b tx_begin 复用:补丁 pack 是独立 mmap,
    校验思路与 open_many 逐 pack 一致) */
 int validate_layout(mosaic_runtime *rt, const u8 *map, size_t map_len,

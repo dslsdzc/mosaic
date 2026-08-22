@@ -50,6 +50,10 @@ public final class Bridge {
     public static native void fnExecute(long rt, long fnHandle, int eventId, byte[] payload);
     public static native byte[] fnState(long rt, long fnHandle);
     public static native long fnIdOf(long rt, long fnHandle);
+    /* 写函数状态(物化后;state 内存 memcpy;长度超 state_size 拒绝返回 -1) */
+    public static native int fnStateWrite(long rt, long fnHandle, byte[] state);
+    /* 列出事件订阅者 fn_id(触发表区间扫描;返回长度,out 填充) */
+    public static native int triggerSubscribers(long rt, int eventId, long[] out);
     /* ---- M5:pack 构建器 ---- */
     public static native long packCreate(String path, long moduleCount, long fnCount,
                                          long triggerCount, long depCount, int eventCount);

@@ -2,8 +2,10 @@
 #include "mosaic_internal.h"
 #include <stdio.h>
 
-/* 触发表下界:第一个 event_id >= ev 的条目下标(逐 pack 扫描用) */
-static u64 trigger_lower_bound(const u8 *map, u32 ev) {
+/* 触发表下界:第一个 event_id >= ev 的条目下标(逐 pack 扫描用)。
+   M6-B:去 static,声明入 mosaic_internal.h——bridge.c(triggerSubscribers
+   列出事件订阅者)复用同一区间扫描,避免复制二分逻辑。 */
+u64 trigger_lower_bound(const u8 *map, u32 ev) {
   u64 n = hdr_trigger_count(map);
   const mosaic_trigger_entry *t = (const mosaic_trigger_entry *)(map + hdr_trigger_off(map));
   u64 lo = 0, hi = n;
