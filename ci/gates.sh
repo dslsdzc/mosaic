@@ -15,7 +15,9 @@ echo "=== gates (10M cold functions) ==="
 build/bench/bench_runner 10000000
 
 echo "=== gates (100M sharded: 100 shards x 1M) ==="
-build/bench/bench_runner 100000000 2>/dev/null "" "" "" 100
+# stderr 不重定向:物化失败时运行时打 err 码诊断(如 so 解析失败 → err 5),
+# 隐藏它会让 S3 "restore dispatch executed != 1" 无法定位
+build/bench/bench_runner 100000000 "" "" "" "" 100
 
 echo "=== world scenarios (100k fns, 10 entities, 1000 ticks) ==="
 build/bench/world_bench
@@ -23,7 +25,6 @@ build/bench/world_bench
 echo "=== vanilla provider contracts (dual-generation: 26.2 + 1.8.9) ==="
 bash ci/run_vanilla_contract_262.sh
 bash ci/run_vanilla_contract_189.sh
-
 echo "=== API version guard + v1 compat sample ==="
 # japi 同步回系统 JDK 字节码:vanilla 脚本以 JDK 25/26 编译(major 69/70),
 # 系统 javac/java(21)无法读取/加载;compat 套件不涉 MC jar,自编译自运行。
