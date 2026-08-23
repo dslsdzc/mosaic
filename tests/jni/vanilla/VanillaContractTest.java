@@ -354,7 +354,7 @@ public class VanillaContractTest {
         // NOTE;null 语义双代必跑) ----
         // 26.2 真实路径限于"可构造 TagKey + registryName":标签内容为数据驱动
         // (TagLoader 世界加载期绑定),契约环境未绑定 → contents() 空数组(Provider
-        // 吸收未绑定 Named 的迭代异常,HolderSet.java:171);真实内容查询在服务端环境。
+        // 吸收未绑定 Named 的迭代异常,HolderSet.java:184);真实内容查询在服务端环境。
         boolean tagAvailable = false;
         Object tagObj = null;
         try { tagObj = env.tagObject(); tagAvailable = true; }
@@ -379,8 +379,8 @@ public class VanillaContractTest {
         check(tagNull.contents() != null && tagNull.contents().length == 0,
                 "tagOf(null) contents empty");
 
-        // ---- M8-C:BlockEntity(null 语义为主,双代必跑;26.2 BlockEntity 受保护构造器
-        // 需 BlockEntityType+BlockState、1.8.9 TileEntity 抽象类——契约环境不可构造,
+        // ---- M8-C:BlockEntity(null 语义为主,双代必跑;26.2 BlockEntity 公共构造器
+        // 需装配 BlockEntityType+BlockState、1.8.9 TileEntity 抽象类——契约环境不可构造,
         // 与 Entity 先例一致;Provider 真实路径完整实现,待服务端环境。
         // 兜底值双代同值:typeRegistryName "unknown"、pos null) ----
         MosaicBlockEntity be = p.blockEntityOf(null);
