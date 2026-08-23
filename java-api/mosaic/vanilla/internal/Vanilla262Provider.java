@@ -2,6 +2,7 @@ package mosaic.vanilla.internal;
 
 import mosaic.MosaicApiException;
 import mosaic.MosaicHandleException;
+import mosaic.runtime.internal.PacketCatalogImpl;
 import mosaic.vanilla.*;
 
 import java.io.ByteArrayInputStream;
@@ -559,12 +560,60 @@ public final class Vanilla262Provider implements MosaicProvider {
         return new DispatcherCommand(this, vanillaCommand);
     }
 
-    /** 网络句柄工厂:契约环境无真实 Connection(构造需 ClientPacketListener/
-     *  ServerCommonPacketListener 等复杂依赖)→ null 语义为主(与 Entity 先例同款);
-     *  真实路径在运行中服务端环境可用。 */
+    /** 网络句柄工厂:26.2 Connection(PacketFlow) 契约环境可轻参构造(Connection
+     *  构造器仅存方向字段;javap 核实)→ 真实路径可用(ConnectionNetwork 持有
+     *  Connection 引用,packetOf 投影与 listener 注册簿记本地语义可达;sendPacket
+     *  的包构造/编码需运行中服务端);null → null-safe 句柄(投影/注册语义照常)。 */
     public MosaicNetwork networkOf(Object vanillaNetwork) {
         if (vanillaNetwork == null) return new NullSafeNetwork();
         return new ConnectionNetwork(this, vanillaNetwork);
+    }
+
+    /* ---------- 网络域投影(7.1) ---------- */
+
+    /** 包投影(7.1):原版包对象 → MosaicPacket 稳定投影。typeId = 包目录 id
+     *  (26.2 mojmap 类简单名直接对目录名,未命中 → 0);direction 由类名约定
+     *  推导(Serverbound 前缀与 ClientIntentionPacket → IN,Clientbound 前缀 →
+     *  OUT,与包目录 id 分组方向一致);playerId/sizeHint 恒 0(投影无连接上下
+     *  文;v1 无包内容序列化)。null → 全零投影(IN, 0, 0)。 */
+    static MosaicPacket packetOf0(Object vanillaPacket) {
+        if (vanillaPacket == null) return new Projection(0, MosaicPacket.Direction.IN, 0, 0);
+        return new Projection(0, directionOf(nameOf(vanillaPacket)),
+                PacketCatalogImpl.packetIdOf(nameOf(vanillaPacket)), 0);
+    }
+
+    /** 包类规范名:getClass().getName() 去包名 + 去内部类段(如
+     *  ServerboundMovePlayerPacket$Pos → ServerboundMovePlayerPacket,与目录名
+     *  匹配;getSimpleName() 对内部类只返回末段 "Pos",不可用)。 */
+    private static String nameOf(Object packet) {
+        String raw = packet.getClass().getName();
+        int dot = raw.lastIndexOf('.');
+        String name = dot >= 0 ? raw.substring(dot + 1) : raw;
+        int dollar = name.indexOf('$');
+        return dollar >= 0 ? name.substring(0, dollar) : name;
+    }
+
+    private static MosaicPacket.Direction directionOf(String simpleName) {
+        if (simpleName == null) return MosaicPacket.Direction.IN;
+        if (simpleName.startsWith("Serverbound") || "ClientIntentionPacket".equals(simpleName))
+            return MosaicPacket.Direction.IN;
+        return MosaicPacket.Direction.OUT;
+    }
+
+    /** 投影实现(7.1):稳定投影的持有者(不可变四元组)。 */
+    private static final class Projection implements MosaicPacket {
+        private final int playerId;
+        private final Direction direction;
+        private final int typeId;
+        private final int sizeHint;
+        Projection(int playerId, Direction direction, int typeId, int sizeHint) {
+            this.playerId = playerId; this.direction = direction;
+            this.typeId = typeId; this.sizeHint = sizeHint;
+        }
+        public int playerId() { return playerId; }
+        public Direction direction() { return direction; }
+        public int typeId() { return typeId; }
+        public int sizeHint() { return sizeHint; }
     }
 
     /* ---------- Recipe / Enchantment(M8-B) ---------- */
@@ -880,12 +929,17 @@ public final class Vanilla262Provider implements MosaicProvider {
     }
 
     /** null-safe 网络句柄(双代同值):sendPacket no-op、listener() 非 null、
-     *  onPacket 返回 no-op 订阅(契约环境无真实 Connection → 兜底值)。 */
+     *  onPacket 返回 no-op 订阅(契约环境无真实 Connection → 兜底值)。
+     *  packetOf 投影照常(纯类名投影,不依赖连接对象)。 */
     private static final class NullSafeNetwork implements MosaicNetwork {
         public void sendPacket(int playerId, byte[] packetData) { }
+        public MosaicPacket packetOf(Object vanillaPacket) { return packetOf0(vanillaPacket); }
         public MosaicPacketListener listener() {
             return new MosaicPacketListener() {
                 public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
+                    return new AutoCloseable() { public void close() { } };
+                }
+                public AutoCloseable onPacket(MosaicPacketSink sink) {
                     return new AutoCloseable() { public void close() { } };
                 }
             };
@@ -899,11 +953,13 @@ public final class Vanilla262Provider implements MosaicProvider {
         private final Vanilla262Provider p;
         private final Object conn;   // Connection/PacketListener
         private final Map<String, List<MosaicPacketHandler>> subs = new HashMap<>();
+        private final List<MosaicPacketSink> sinks = new ArrayList<>();
         ConnectionNetwork(Vanilla262Provider p, Object conn) { this.p = p; this.conn = conn; }
 
         public void sendPacket(int playerId, byte[] packetData) {
             // 26.2 Connection.send(Packet):Packet 编解码需运行中服务端,契约环境不可构造 → 静默跳过
         }
+        public MosaicPacket packetOf(Object vanillaPacket) { return packetOf0(vanillaPacket); }
         public MosaicPacketListener listener() {
             return new MosaicPacketListener() {
                 public AutoCloseable onPacket(String packetTypeName, MosaicPacketHandler handler) {
@@ -917,6 +973,12 @@ public final class Vanilla262Provider implements MosaicProvider {
                             if (list != null) list.remove(h);
                         }
                     };
+                }
+                public AutoCloseable onPacket(MosaicPacketSink sink) {
+                    if (sink == null) return new AutoCloseable() { public void close() { } };
+                    final MosaicPacketSink s = sink;
+                    sinks.add(s);
+                    return new AutoCloseable() { public void close() { sinks.remove(s); } };
                 }
             };
         }

@@ -255,6 +255,115 @@ public class VanillaContractTest {
         try { sub.close(); check(true, "subscription close no-throw"); }
         catch (Exception ex) { check(false, "subscription close no-throw: " + ex); }
 
+        // ---- 7.2:网络域真实路径(双代共同包语义对照 + 未知包 + 监听器生命周期) ----
+        // 语义锚 = 1.20.1 包目录 id(src/packets.c,168 条,Task 6);角色表为双代
+        // 共同包(26.2 mojmap 类名直接对目录名;1.8.9 MCP 名经 Provider 语义对照
+        // 表映射进同一 id 空间)。各角色经 env.packetObject(role) 构造该代真实
+        // 包对象;不可构造 → 跳过该角色真实断言(NOTE,不失败,与 commandObject/
+        // enchantmentObject 的 if-available 守卫同款)。
+        // 方向断言:角色后缀 _in = IN(玩家 → 服务端)、_out = OUT(服务端 → 玩家),
+        // 与包目录 id 分组方向一致(0x01xx/0x05xx/0x07xx/0x09xx = IN,
+        // 0x02xx/0x06xx/0x08xx = OUT)。playerId/sizeHint 恒 0(投影无连接上下文;
+        // v1 无包内容序列化——已知边界,README 标注)。
+        Object netObj = null;
+        try { netObj = env.networkObject(); }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " networkObject unavailable, "
+                    + "using null network handle: " + ex);
+        }
+        MosaicNetwork netReal = p.networkOf(netObj);
+        check(netReal != null, "networkOf real-path handle");
+
+        String[][] commonPackets = {
+                { "keepalive_in",    "0x0111" },   /* ServerboundKeepAlivePacket       ↔ C00PacketKeepAlive */
+                { "chat_in",         "0x0105" },   /* ServerboundChatPacket            ↔ C01PacketChatMessage */
+                { "move_in",         "0x0113" },   /* ServerboundMovePlayerPacket      ↔ C03PacketPlayer */
+                { "swing_in",        "0x012B" },   /* ServerboundSwingPacket           ↔ C0APacketAnimation */
+                { "dig_in",          "0x0119" },   /* ServerboundPlayerActionPacket    ↔ C07PacketPlayerDigging */
+                { "place_in",        "0x012D" },   /* ServerboundUseItemOnPacket       ↔ C08PacketPlayerBlockPlacement */
+                { "keepalive_out",   "0x0224" },   /* ClientboundKeepAlivePacket       ↔ S00PacketKeepAlive */
+                { "chat_out",        "0x0263" },   /* ClientboundSystemChatPacket      ↔ S02PacketChat */
+                { "health_out",      "0x0256" },   /* ClientboundSetHealthPacket       ↔ S06PacketUpdateHealth */
+                { "move_out",        "0x023B" },   /* ClientboundPlayerPositionPacket  ↔ S08PacketPlayerPosLook */
+                { "blockchange_out", "0x020A" },   /* ClientboundBlockUpdatePacket     ↔ S23PacketBlockChange */
+                { "windowitems_out", "0x0213" },   /* ClientboundContainerSetContentPacket ↔ S30PacketWindowItems */
+                { "setslot_out",     "0x0215" },   /* ClientboundContainerSetSlotPacket ↔ S2FPacketSetSlot */
+                { "abilities_out",   "0x0233" },   /* ClientboundPlayerAbilitiesPacket ↔ S39PacketPlayerAbilities */
+        };
+        int commonCovered = 0;
+        for (String[] row : commonPackets) {
+            String role = row[0];
+            int expectId = (int) Long.parseLong(row[1].substring(2), 16);
+            boolean dirIn = role.endsWith("_in");
+            Object pkt = null;
+            boolean avail = false;
+            try { pkt = env.packetObject(role); avail = true; }
+            catch (Exception ex) {
+                System.err.println("NOTE: " + p.mcVersion() + " packetObject(" + role
+                        + ") unavailable, role assertion skipped: " + ex);
+            }
+            if (avail) {
+                commonCovered++;
+                MosaicPacket mp = netReal.packetOf(pkt);
+                check(mp != null, role + " packetOf non-null");
+                check(mp.typeId() == expectId,
+                        role + " typeId 0x" + row[1].substring(2).toUpperCase()
+                                + " (got 0x" + Integer.toHexString(mp.typeId()).toUpperCase() + ")");
+                check(mp.direction() == (dirIn ? MosaicPacket.Direction.IN : MosaicPacket.Direction.OUT),
+                        role + " direction " + (dirIn ? "IN" : "OUT")
+                                + " (got " + mp.direction() + ")");
+                check(mp.playerId() == 0, role + " playerId 0 (projection, no connection context)");
+                check(mp.sizeHint() == 0, role + " sizeHint 0 (v1: no packet content serialization)");
+            }
+        }
+        check(commonCovered >= 5,
+                "common packet roles covered (got " + commonCovered + " of " + commonPackets.length
+                        + "; both generations constructible)");
+
+        // 未知包 → typeId 0(目录外/该代独有);direction 仍按包类名约定推导
+        // (双代 unknown 均为 clientbound 类 → OUT)
+        Object unkObj = null;
+        boolean unkAvail = false;
+        try { unkObj = env.unknownPacketObject(); unkAvail = true; }
+        catch (Exception ex) {
+            System.err.println("NOTE: " + p.mcVersion() + " unknownPacketObject unavailable, "
+                    + "unknown-packet assertions skipped: " + ex);
+        }
+        if (unkAvail) {
+            MosaicPacket up = netReal.packetOf(unkObj);
+            check(up != null, "unknown packet packetOf non-null");
+            check(up.typeId() == 0, "unknown packet typeId 0 (got 0x"
+                    + Integer.toHexString(up.typeId()).toUpperCase() + ")");
+            check(up.direction() == MosaicPacket.Direction.OUT,
+                    "unknown packet direction OUT by class name (got " + up.direction() + ")");
+        }
+        // packetOf(null) → 全零投影(typeId 0 / direction IN 默认 / playerId 0 / sizeHint 0)
+        MosaicPacket np = netReal.packetOf(null);
+        check(np != null, "packetOf(null) non-null");
+        check(np.typeId() == 0, "packetOf(null) typeId 0");
+        check(np.playerId() == 0 && np.sizeHint() == 0, "packetOf(null) playerId/sizeHint 0");
+
+        // 监听器注册/注销/回调语义(7.1):投影回调订阅生命周期 + 回调类型契约。
+        // 契约环境无真实连接收发包 → 不伪造派发;真实分发路径 = 服务端环境
+        // (内核 packet_received/packet_sent 事件已由 Task 6 1.20.1 E2E 验证)。
+        MosaicPacketListener plReal = netReal.listener();
+        check(plReal != null, "real network listener() non-null");
+        AutoCloseable subReal = plReal.onPacket(pkt2 -> { });
+        check(subReal != null, "onPacket(MosaicPacketSink) non-null subscription");
+        try { subReal.close(); check(true, "projection subscription close no-throw"); }
+        catch (Exception ex) { check(false, "projection subscription close no-throw: " + ex); }
+        try { subReal.close(); check(true, "projection subscription double-close no-throw"); }
+        catch (Exception ex) { check(false, "projection subscription double-close no-throw: " + ex); }
+        // null 网络句柄上新增重载同样可用(双代必跑)
+        AutoCloseable subNull2 = net.listener().onPacket(pkt2 -> { });
+        check(subNull2 != null, "null network onPacket(MosaicPacketSink) non-null subscription");
+        try { subNull2.close(); check(true, "null network projection subscription close no-throw"); }
+        catch (Exception ex) { check(false, "null network projection subscription close no-throw: " + ex); }
+        // 回调语义(MosaicPacketSink 功能接口):回调载荷 = packetOf 投影(类型契约)
+        MosaicPacketSink sink = pkt2 -> check(pkt2 != null, "sink receives non-null MosaicPacket");
+        sink.onPacket(netReal.packetOf(null));
+        check(true, "sink consumes MosaicPacket projection");
+
         // ---- M8-B:Recipe(null 语义为主,双代必跑;真实路径留服务端,与 Entity 先例一致。
         // 26.2 Recipe 为接口不可轻量构造、1.8.9 IRecipe 实例虽可构造但双代不对称,
         // 任务务实决策 null 语义为主——Provider 真实路径实现完整,待服务端环境) ----

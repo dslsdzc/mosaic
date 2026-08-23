@@ -212,6 +212,14 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 ## 已知边界
 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
-- 网络真实路径未实现(Connection 挂钩 + 包序列化过桥为 M8-D 之后的后续设计项,记录在任务报告)。
+- 网络真实路径(内核 + API 面就绪):1.20.1 Connection 双挂钩(doSendPacket 出站 +
+  channelRead0 入站)触发 packet_received/packet_sent 事件,168 包目录(include/
+  mosaic/packets.h;Task 6 服务端 E2E:packet_received calls=6 / packet_sent calls=4);
+  API 面 MosaicNetwork/MosaicPacket/MosaicPacketListener 真实句柄——packetOf 投影
+  (typeId = 包目录 id)、listener 注册/注销,双代 Provider 语义映射(26.2 mojmap
+  名直接对目录名 / 1.8.9 MCP 语义对照表,1.8.9 独有包 → UNKNOWN(0)),26.2/1.8.9
+  契约全绿。
+- 网络包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注;sendPacket 的包编码
+  与 API 监听器 → 内核事件的分发接线待服务端环境)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
 - 原版能力域 API 已由 M5/M6 补齐(19 个零实现接口全部就绪:entity/block/item/registry/状态/触发/元数据等,含双代 Provider)——见 `docs/` 与 `tests/jni/vanilla/`。

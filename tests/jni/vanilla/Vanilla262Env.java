@@ -109,4 +109,92 @@ public class Vanilla262Env implements VanillaEnv {
         Object ident = ReflectUtil.callStatic("net.minecraft.resources.Identifier", "parse", "planks");
         return ReflectUtil.callStatic("net.minecraft.tags.TagKey", "create", regKey, ident);
     }
+    public Object networkObject() throws Exception {
+        // 26.2 Connection(PacketFlow) 轻参构造(Connection.java;PacketFlow 枚举
+        // SERVERBOUND/CLIENTBOUND)。SERVERBOUND = 服务端侧连接方向。句柄真实
+        // 路径(ConnectionNetwork)契约环境可达:packetOf 投影与 listener 注册簿记
+        // 均为本地语义,不依赖运行中服务端;sendPacket 的包编码仍需服务端环境。
+        // 构造失败 → null(Provider 回退 null-safe 句柄,投影/注册语义照常)。
+        try {
+            return ReflectUtil.callConstructor("net.minecraft.network.Connection",
+                    ReflectUtil.fieldStatic("net.minecraft.network.protocol.PacketFlow", "SERVERBOUND"));
+        } catch (Exception e) { return null; }
+    }
+    public Object packetObject(String role) throws Exception {
+        // 7.2 共同包角色 → 26.2 真实包实例(mojmap 名直接对包目录名)。
+        // 构造签名全部经 jar javap 核实(见 task-7-report.md)。
+        switch (role) {
+            case "keepalive_in":   // ServerboundKeepAlivePacket(long)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.common.ServerboundKeepAlivePacket", 42L);
+            case "chat_in":        // ServerboundChatPacket(String, Instant, long, MessageSignature, LastSeenMessages$Update)
+                // MessageSignature 构造器校验长度 == BYTES(256)(MessageSignature.java:26
+                // "Invalid message signature size"),实测 32B 抛 IllegalStateException
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ServerboundChatPacket",
+                        "hello", java.time.Instant.EPOCH, 0L,
+                        ReflectUtil.callConstructor("net.minecraft.network.chat.MessageSignature", new byte[256]),
+                        ReflectUtil.callConstructor("net.minecraft.network.chat.LastSeenMessages$Update",
+                                0, new java.util.BitSet(), (byte) 0));
+            case "move_in":        // ServerboundMovePlayerPacket$Pos(double, double, double, boolean, boolean)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ServerboundMovePlayerPacket$Pos",
+                        0d, 64d, 0d, false, false);
+            case "swing_in":       // ServerboundSwingPacket(InteractionHand)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ServerboundSwingPacket",
+                        ReflectUtil.fieldStatic("net.minecraft.world.InteractionHand", "MAIN_HAND"));
+            case "dig_in":         // ServerboundPlayerActionPacket(Action, BlockPos, Direction)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ServerboundPlayerActionPacket",
+                        ReflectUtil.fieldStatic("net.minecraft.network.protocol.game.ServerboundPlayerActionPacket$Action",
+                                "START_DESTROY_BLOCK"),
+                        ReflectUtil.callConstructor("net.minecraft.core.BlockPos", 0, 0, 0),
+                        ReflectUtil.fieldStatic("net.minecraft.core.Direction", "UP"));
+            case "place_in":       // ServerboundUseItemOnPacket(InteractionHand, BlockHitResult, int)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ServerboundUseItemOnPacket",
+                        ReflectUtil.fieldStatic("net.minecraft.world.InteractionHand", "MAIN_HAND"),
+                        ReflectUtil.callConstructor("net.minecraft.world.phys.BlockHitResult",
+                                ReflectUtil.callConstructor("net.minecraft.world.phys.Vec3", 0d, 0d, 0d),
+                                ReflectUtil.fieldStatic("net.minecraft.core.Direction", "UP"),
+                                ReflectUtil.callConstructor("net.minecraft.core.BlockPos", 0, 0, 0),
+                                false),
+                        0);
+            case "keepalive_out":  // ClientboundKeepAlivePacket(long)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.common.ClientboundKeepAlivePacket", 42L);
+            case "chat_out":       // ClientboundSystemChatPacket(Component, boolean)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundSystemChatPacket",
+                        ReflectUtil.callStatic("net.minecraft.network.chat.Component", "translatable", "chat.type.text"),
+                        false);
+            case "health_out":     // ClientboundSetHealthPacket(float, int, float)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundSetHealthPacket",
+                        20.0f, 20, 20.0f);
+            case "move_out":       // ClientboundPlayerPositionPacket(int, PositionMoveRotation, Set<Relative>)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket",
+                        0,
+                        ReflectUtil.callConstructor("net.minecraft.world.entity.PositionMoveRotation",
+                                ReflectUtil.callConstructor("net.minecraft.world.phys.Vec3", 0d, 0d, 0d),
+                                ReflectUtil.callConstructor("net.minecraft.world.phys.Vec3", 0d, 0d, 0d),
+                                0.0f, 0.0f),
+                        java.util.Set.of(ReflectUtil.fieldStatic("net.minecraft.world.entity.Relative", "X")));
+            case "blockchange_out":  // ClientboundBlockUpdatePacket(BlockPos, BlockState)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket",
+                        ReflectUtil.callConstructor("net.minecraft.core.BlockPos", 0, 0, 0),
+                        ReflectUtil.call(ReflectUtil.fieldStatic("net.minecraft.world.level.block.Blocks", "STONE"),
+                                "defaultBlockState"));
+            case "windowitems_out":  // ClientboundContainerSetContentPacket(int, int, List<ItemStack>, ItemStack)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket",
+                        0, 0, java.util.List.of(),
+                        ReflectUtil.fieldStatic("net.minecraft.world.item.ItemStack", "EMPTY"));
+            case "setslot_out":    // ClientboundContainerSetSlotPacket(int, int, int, ItemStack)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket",
+                        0, 0, 0, ReflectUtil.fieldStatic("net.minecraft.world.item.ItemStack", "EMPTY"));
+            case "abilities_out":  // ClientboundPlayerAbilitiesPacket(Abilities)
+                return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket",
+                        ReflectUtil.callConstructor("net.minecraft.world.entity.player.Abilities"));
+            default:
+                throw new NoSuchMethodException("unknown 26.2 packet role " + role);
+        }
+    }
+    public Object unknownPacketObject() throws Exception {
+        // 26.2 独有包(目录外;1.20.1 无此包类):ClientboundTickingStatePacket(float, boolean)
+        // (26.2 新增 tick 速率状态包)——typeId 应为 0(UNKNOWN),direction OUT。
+        return ReflectUtil.callConstructor("net.minecraft.network.protocol.game.ClientboundTickingStatePacket",
+                0.5f, false);
+    }
 }

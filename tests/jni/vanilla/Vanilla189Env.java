@@ -83,4 +83,64 @@ public class Vanilla189Env implements VanillaEnv {
         // 跳过(if-available 守卫打印 NOTE;双代不对称:26.2 TagKey 可构造)。
         throw new ClassNotFoundException("1.8.9 has no net.minecraft.tags package (tag system is 1.13+)");
     }
+    public Object networkObject() throws Exception {
+        // 1.8.9 NetworkManager(EnumPacketDirection) 轻参构造(NetworkManager.java;
+        // EnumPacketDirection SERVERBOUND/CLIENTBOUND)。SERVERBOUND = 服务端侧
+        // 连接方向。句柄真实路径(NetHandlerNetwork)契约环境可达:packetOf 投影与
+        // listener 注册簿记均为本地语义;sendPacket 的包构造/编码需服务端环境。
+        // 构造失败 → null(Provider 回退 null-safe 句柄,投影/注册语义照常)。
+        try {
+            return ReflectUtil.callConstructor("net.minecraft.network.NetworkManager",
+                    ReflectUtil.fieldStatic("net.minecraft.network.EnumPacketDirection", "SERVERBOUND"));
+        } catch (Exception e) { return null; }
+    }
+    public Object packetObject(String role) throws Exception {
+        // 7.2 共同包角色 → 1.8.9 真实包实例(MCP 名;Provider 语义对照表映射到目录 id)。
+        // 构造签名全部经 jar javap 核实(见 task-7-report.md)。
+        switch (role) {
+            case "keepalive_in":   // C00PacketKeepAlive(int)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C00PacketKeepAlive", 42);
+            case "chat_in":        // C01PacketChatMessage(String)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C01PacketChatMessage", "hello");
+            case "move_in":        // C03PacketPlayer(boolean)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C03PacketPlayer", true);
+            case "swing_in":       // C0APacketAnimation()
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C0APacketAnimation");
+            case "dig_in":         // C07PacketPlayerDigging(Action, BlockPos, EnumFacing)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C07PacketPlayerDigging",
+                        ReflectUtil.fieldStatic("net.minecraft.network.play.client.C07PacketPlayerDigging$Action",
+                                "START_DESTROY_BLOCK"),
+                        ReflectUtil.callConstructor("net.minecraft.util.BlockPos", 0, 0, 0),
+                        ReflectUtil.fieldStatic("net.minecraft.util.EnumFacing", "UP"));
+            case "place_in":       // C08PacketPlayerBlockPlacement()
+                return ReflectUtil.callConstructor("net.minecraft.network.play.client.C08PacketPlayerBlockPlacement");
+            case "keepalive_out":  // S00PacketKeepAlive(int)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S00PacketKeepAlive", 42);
+            case "chat_out":       // S02PacketChat(IChatComponent)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S02PacketChat",
+                        ReflectUtil.callConstructor("net.minecraft.util.ChatComponentText", "hello"));
+            case "health_out":     // S06PacketUpdateHealth(float, int, float)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S06PacketUpdateHealth",
+                        20.0f, 20, 20.0f);
+            case "move_out":       // S08PacketPlayerPosLook(double, double, double, float, float, Set)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S08PacketPlayerPosLook",
+                        0d, 0d, 0d, 0f, 0f, java.util.Set.of());
+            case "blockchange_out":  // S23PacketBlockChange()(无参;World 构造器契约环境不可用)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S23PacketBlockChange");
+            case "windowitems_out":  // S30PacketWindowItems(int, List<ItemStack>)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S30PacketWindowItems",
+                        0, java.util.List.of());
+            case "setslot_out":    // S2FPacketSetSlot()(无参;ItemStack 构造器契约环境不可用)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S2FPacketSetSlot");
+            case "abilities_out":  // S39PacketPlayerAbilities()(无参;PlayerCapabilities 构造器契约环境不可用)
+                return ReflectUtil.callConstructor("net.minecraft.network.play.server.S39PacketPlayerAbilities");
+            default:
+                throw new NoSuchMethodException("unknown 1.8.9 packet role " + role);
+        }
+    }
+    public Object unknownPacketObject() throws Exception {
+        // 1.8.9 独有包(目录外;画作实体生成包,现代版本已移除,无 1.20.1 对应类):
+        // S10PacketSpawnPainting() 无参构造——typeId 应为 0(UNKNOWN),direction OUT。
+        return ReflectUtil.callConstructor("net.minecraft.network.play.server.S10PacketSpawnPainting");
+    }
 }
