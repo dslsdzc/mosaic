@@ -35,6 +35,14 @@ public class ApiContractTest {
         return (String[]) f.get(null);
     }
 
+    /** N2(M6-E)包目录一致性门禁:反射读 PacketCatalogImpl.PACKET_NAMES。 */
+    static String[] packetNames() throws Exception {
+        Class<?> pc = Class.forName("mosaic.runtime.internal.PacketCatalogImpl");
+        java.lang.reflect.Field f = pc.getDeclaredField("PACKET_NAMES");
+        f.setAccessible(true);
+        return (String[]) f.get(null);
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length < 1) { System.err.println("usage: ApiContractTest <pack>"); System.exit(2); }
         String pack = args[0];
@@ -105,6 +113,24 @@ public class ApiContractTest {
         check(Native.eventCatalogName(catalogSize) == null, "catalog accessor out-of-range -> null");
         check(Native.eventCatalogName(-1) == null, "catalog accessor negative index -> null");
 
+        // ---- M6-E:包目录 N2 一致性门禁(packets.c ↔ PACKET_NAMES 双向比对)----
+        String[] javaPackets = packetNames();
+        int packetCatalogSize = 0;
+        while (Native.packetCatalogName(packetCatalogSize) != null) packetCatalogSize++;
+        check(javaPackets.length == packetCatalogSize,
+              "PACKET_NAMES length == packet catalog size, got " + javaPackets.length
+                  + " vs " + packetCatalogSize);
+        for (int i = 0; i < javaPackets.length; i++) {
+            String cn = Native.packetCatalogName(i);
+            check(javaPackets[i].equals(cn),
+                  "packet catalog name[" + i + "] drift: java='" + javaPackets[i]
+                      + "' c='" + cn + "'");
+        }
+        check(Native.packetCatalogName(packetCatalogSize) == null,
+              "packet catalog accessor out-of-range -> null");
+        check(Native.packetCatalogName(-1) == null,
+              "packet catalog accessor negative index -> null");
+
         // ---- M6-A:事件载荷类型化解码 / 编解码工具 / 自诊断桥 ----
         // player 域 {player_id=7}(4B 小端)→ decodeInts()[0]==7(测试包仅注册
         // player_join(id 0),域判定走 EVENT_NAMES 探测路径)
@@ -137,6 +163,26 @@ public class ApiContractTest {
         int[] neg = codec.decodeInts(codec.encodeInts(-1, 0x7fffffff, 0x80000000));
         check(neg[0] == -1 && neg[1] == 0x7fffffff && neg[2] == 0x80000000,
               "codec preserves 32-bit range");
+
+        // ---- M6-E:网络域载荷(packet_received = mosaic_ev_network 12B/3×u32)----
+        String netPackPath = "/tmp/mosaic_network_domain.pack";
+        MosaicPackBuilder pbn = PackBuilderImpl.create(netPackPath, 1, 0, 0, 0, 1);
+        pbn.addModule(1, 1, "net_mod", "/tmp/mosaic_net_mod.so");   /* 0 函数;so 仅物化才解析 */
+        pbn.addEvent("packet_received");
+        check(pbn.finish() == 0, "M6E network pack finish");
+        MosaicRuntime rtNet = MosaicRuntime.open(new String[]{netPackPath});
+        int netId = rtNet.eventId("packet_received");
+        check(netId >= 0, "M6E packet_received registered");
+        MosaicEventPayload npl = MosaicEventPayload.of(netId,
+                new byte[]{7, 0, 0, 0, (byte) 0x05, 0x01, 0, 0, 0, 0, 0, 0});
+        int[] nf = npl.decodeInts();
+        check(nf.length == 3 && nf[0] == 7 && nf[1] == 0x0105 && nf[2] == 0,
+              "M6E network payload decode {player_id=7, packet_id=0x0105}, got "
+                  + Arrays.toString(nf));
+        check(npl.encode().length == 12, "M6E network payload encode 12B");
+        try { MosaicEventPayload.of(netId, new byte[8]); check(false, "M6E net payload len mismatch should throw"); }
+        catch (MosaicHandleException e) { check(true, "M6E net payload len mismatch throws"); }
+        rtNet.close();
 
         // 自诊断桥:句柄 != 0、lastError 可读且与运行时同源
         MosaicBridge b = rt.bridge();

@@ -58,12 +58,19 @@ static void test_catalog_payload_sizes(void) {
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("tick")->payload_size, sizeof(mosaic_ev_tick));
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("server_start")->payload_size, 0);   /* 无载荷 */
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("server_stop")->payload_size, 0);
+  /* M6-E 网络域:packet_received/packet_sent = 12B(3×u32) */
+  MT_CHECK_EQ_U64(mosaic_event_spec_by_name("packet_received")->payload_size, sizeof(mosaic_ev_network));
+  MT_CHECK_EQ_U64(mosaic_event_spec_by_name("packet_sent")->payload_size, sizeof(mosaic_ev_network));
+  MT_CHECK_EQ_U64(sizeof(mosaic_ev_network), 12);
+  MT_CHECK(mosaic_event_spec_by_name("packet_received")->freq == MOSAIC_EV_FREQ_HIGH);
+  MT_CHECK(mosaic_event_spec_by_name("packet_sent")->freq == MOSAIC_EV_FREQ_HIGH);
   /* 对齐 4 字节:所有域结构体大小为 4 的倍数 */
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_player) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_player_command) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_block) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_item) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_entity) % 4, 0);
+  MT_CHECK_EQ_U64(sizeof(mosaic_ev_network) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_tick) % 4, 0);
   /* 载荷大小(非零)与 4 对齐 */
   for (u32 i = 0; i < mosaic_events_catalog_count; i++)

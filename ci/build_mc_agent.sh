@@ -37,6 +37,10 @@ if ! diff -q build/bridge_agent_native.txt build/bridge_java_native.txt >/dev/nu
 fi
 echo "[agent] OK: Bridge native 声明一致 ($(wc -l < build/bridge_agent_native.txt) 个 native 方法)"
 
+echo "[agent] packet map generation (M6-E: server_mappings -> PacketMap.java)..."
+bash ci/gen_packet_map.sh
+PACKET_MAP=build/generated/agent/com/mosaic/agent/PacketMap.java
+
 echo "[agent] javac (classpath: asm;hooks 对 1.20.1 混淆名反射,无 MC 编译依赖)..."
 # agent/mosaic/Bridge.java = M4-1 Bridge 的内嵌版(API 相同,静态块按绝对路径
 # System.load)——编译进 agent jar → 运行时零外部类路径/零 java.library.path 依赖
@@ -44,7 +48,8 @@ javac -cp lib/asm.jar -d build/agentclasses \
     agent/mosaic/Bridge.java \
     agent/com/mosaic/agent/MosaicAgent.java \
     agent/com/mosaic/agent/MosaicHooks.java \
-    agent/com/mosaic/agent/MosaicTransformer.java
+    agent/com/mosaic/agent/MosaicTransformer.java \
+    "$PACKET_MAP"
 
 echo "[agent] bundling asm classes into agent jar..."
 (cd lib && unzip -qo asm.jar -d ../build/asmclasses)

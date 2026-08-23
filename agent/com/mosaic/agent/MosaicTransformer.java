@@ -58,6 +58,18 @@ import org.objectweb.asm.Opcodes;
  *            Task 5 5.5:packet = 第 2 参,消息文本提取)
  *   - aig = net.minecraft.server.level.ServerPlayer
  *       a(Lben;)V     = die(DamageSource)→ 方法入口注入 onPlayerDeath(player)
+ *   - sd = net.minecraft.network.Connection(Task 6 网络域;核实见
+ *       .superpowers/sdd/task-6-report.md)
+ *       channelRead0(Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V
+ *          = SimpleChannelInboundHandler 桥接入口(包解码后;netty channelRead
+ *          instanceof 校验后仅真实包调用)
+ *          → 方法入口注入 onPacketReceived(conn, packet)
+ *       a(Luo;Lsl;Lse;Lse;)V = doSendPacket(Packet,PacketSendListener,
+ *          ConnectionProtocol,ConnectionProtocol)(1.20.1 发送漏斗,包编码前
+ *          出口;[偏差] brief 的 channelWrite(ChannelHandlerContext,Object,
+ *          ChannelPromise) 不存在于 1.20.1 Connection——javap 实测 sd 仅
+ *          extends SimpleChannelInboundHandler,无 ChannelOutboundHandler)
+ *          → 方法入口注入 onPacketSent(conn, packet)
  *   - net/minecraft/server/MinecraftServer
  *       a(Ljava/util/function/BooleanSupplier;)V = tickServer → 方法尾注入
  *                                          onServerTick(this)(每 tick 派发 "tick")
@@ -108,6 +120,17 @@ public final class MosaicTransformer implements ClassFileTransformer {
         /* aig = net.minecraft.server.level.ServerPlayer(die(DamageSource),M8-D) */
         put("aig", "a", "(Lben;)V", Kind.START, new int[]{0},
             "onPlayerDeath", "(Ljava/lang/Object;)V");
+        /* sd = net.minecraft.network.Connection(Task 6 网络域)
+           入站:channelRead0(ChannelHandlerContext,Object) 桥接入口(包解码后;
+           local 0=this, 1=ctx, 2=packet → 取 {0,2});
+           出站:a(Luo;Lsl;Lse;Lse;)V = doSendPacket 发送漏斗(包编码前;
+           local 1=packet) */
+        put("sd", "channelRead0",
+            "(Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V",
+            Kind.START, new int[]{0, 2},
+            "onPacketReceived", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+        put("sd", "a", "(Luo;Lsl;Lse;Lse;)V", Kind.START, new int[]{0, 1},
+            "onPacketSent", "(Ljava/lang/Object;Ljava/lang/Object;)V");
         /* MinecraftServer.tickServer(未混淆) */
         put("net/minecraft/server/MinecraftServer", "a",
             "(Ljava/util/function/BooleanSupplier;)V", Kind.END, new int[]{0},
@@ -122,6 +145,7 @@ public final class MosaicTransformer implements ClassFileTransformer {
         DISPLAY.put("aif", "net.minecraft.server.level.ServerLevel");
         DISPLAY.put("aiy", "net.minecraft.server.network.ServerGamePacketListenerImpl");
         DISPLAY.put("aig", "net.minecraft.server.level.ServerPlayer");
+        DISPLAY.put("sd", "net.minecraft.network.Connection");
         DISPLAY.put("net/minecraft/server/MinecraftServer", "net.minecraft.server.MinecraftServer");
     }
 

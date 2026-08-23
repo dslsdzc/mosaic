@@ -104,7 +104,8 @@ public final class EventImpl implements MosaicEventDispatcher {
             "item_drop", "item_durability_change", "item_enchant", "item_lore_change",
             "item_mend", "item_merge", "item_move", "item_pickup", "item_rename",
             "item_smelt", "item_spawn", "item_swap_hand", "item_transform", "item_use",
-            "lightning_strike", "player_advancement", "player_armor_change",
+            "lightning_strike", "packet_received", "packet_sent",
+            "player_advancement", "player_armor_change",
             "player_bed_enter", "player_bed_leave", "player_break_item",
             "player_bucket_empty", "player_bucket_fill", "player_chat", "player_command",
             "player_command_preprocess", "player_command_send", "player_consume_item",
@@ -131,10 +132,11 @@ public final class EventImpl implements MosaicEventDispatcher {
         };
 
         /** 载荷大小 = events.h 域结构体:player=4B、player_command=8B、
-         *  block=20B、entity=28B、item=12B、server=0(空)、其余(world 周期
-         *  等)= 4B。 */
+         *  block=20B、entity=28B、item=12B、network=12B、
+         *  server=0(空)、其余(world 周期等)= 4B。 */
         static int payloadSize(String name) {
             if (name.equals("player_command")) return 8;    /* mosaic_ev_player_command */
+            if (name.startsWith("packet_")) return 12;      /* mosaic_ev_network */
             if (name.startsWith("player_")) return 4;
             if (name.startsWith("block_")) return 20;
             if (name.startsWith("item_") || name.startsWith("inventory_")) return 12;

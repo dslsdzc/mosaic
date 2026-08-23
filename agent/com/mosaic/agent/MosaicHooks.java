@@ -66,6 +66,24 @@ import java.lang.reflect.Method;
  *     [修正] 1.20.1 EntityType 无 getId():bfn.a() 实为
  *     a()Ljava/lang/Class; = mojmap getBaseClass()(javap 实测;此前误作
  *     EntityType.getId)——注册 id 需 BuiltInRegistries.ENTITY_TYPE 访问。
+ *   - [Task 6 新增,2026-08-23 server_mappings(0b4dba049482…) + javap 实测
+ *     server-1.20.1.jar 核实,记录见 .superpowers/sdd/task-6-report.md]:
+ *     net.minecraft.network.Connection -> sd
+ *       入站:channelRead0(ChannelHandlerContext,Object)(SimpleChannelInbound
+ *       Handler 桥接入口,包解码后;netty channelRead 仅对真实包调用本方法)
+ *       -> 保持名 channelRead0(protected),desc
+ *       (Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V
+ *       出站:doSendPacket(Packet,PacketSendListener,ConnectionProtocol,
+ *       ConnectionProtocol) -> a(private),desc (Luo;Lsl;Lse;Lse;)V
+ *       ——1.20.1 发送漏斗(包编码前出口)。[偏差] brief 的
+ *       channelWrite(ChannelHandlerContext,Object,ChannelPromise) 不存在于
+ *       1.20.1 Connection:javap 实测 sd 仅 extends SimpleChannelInboundHandler
+ *       (无 ChannelOutboundHandler 实现、无 channelWrite 方法)——以 doSendPacket
+ *       替代,语义同(brief 文档注明"包编码前出口")。
+ *       字段 packetListener -> o(private,类型 sk = net.minecraft.network.PacketListener)
+ *     net.minecraft.network.protocol.Packet -> uo(接口)、
+ *     PacketListener -> sk、PacketSendListener -> sl、
+ *     ConnectionProtocol -> se(全部 javap 实测)
  *   - [Task 5 新增,2026-08-23 server_mappings(0b4dba04…) + javap 实测
  *     server-1.20.1.jar 核实,记录见 .superpowers/sdd/task-5-report.md]:
  *     BuiltInRegistries -> jb、ENTITY_TYPE 字段 -> h(public static final
@@ -83,7 +101,9 @@ import java.lang.reflect.Method;
  *   player_join/player_leave/tick/player_chat/player_death = 4B u32;
  *   player_command = 8B(player_id + cmd_hash 2×u32);
  *   block_break/block_place = 20B(5×u32);
- *   entity_spawn = 28B(entity_id/entity_type/x/y/z/dimension/source 7×u32)。
+ *   entity_spawn = 28B(entity_id/entity_type/x/y/z/dimension/source 7×u32);
+ *   packet_received/packet_sent = 12B(3×u32:player_id/packet_id/size_hint;
+ *   size_hint v1 恒 0)。
  */
 public final class MosaicHooks {
 
@@ -98,6 +118,7 @@ public final class MosaicHooks {
         "player_join", "player_leave", "block_break", "tick", "server_command",
         "block_place", "entity_spawn", "player_chat", "player_death",
         "player_command",   /* Task 5 5.3:chat 命令漏斗(onChatCommand)派发 */
+        "packet_received", "packet_sent",   /* Task 6:网络域(onPacketReceived/onPacketSent) */
     };
     private static final int[] EV_IDS = new int[EVENTS.length];
     private static final long[] EV_EXEC = new long[EVENTS.length];   /* dispatch 返回执行数累积 */
@@ -133,6 +154,9 @@ public final class MosaicHooks {
     private static Method M_PARSE_CTX;     /* ParseResults.getContext() */
     private static Method M_CTX_SRC;       /* CommandContextBuilder.getSource() */
     private static Method M_SRC_PLAYER;    /* 5.3:ds.i()=CommandSourceStack.getPlayer() */
+    /* Task 6:网络域(Connection 双向挂钩;sd = Connection,核实见头注释) */
+    private static Class<?> C_AIY;         /* aiy = ServerGamePacketListenerImpl */
+    private static Field  F_PACKET_LISTENER; /* sd.o (private, Connection.packetListener) */
     private static boolean reflected = false;
     private static boolean resolveWarned = false;
 
@@ -213,6 +237,12 @@ public final class MosaicHooks {
             /* 5.3:player_command 载荷 player_id —— ds.i() = getPlayer()
                (ServerPlayer,可 null → player_id=0) */
             M_SRC_PLAYER = clazz("ds").getMethod("i");
+            /* Task 6:网络域——sd.o(packetListener, private)+ aiy 类(玩家
+               提取:listener instanceof aiy → 读 aiy.b 字段;登录/状态/握手
+               阶段 listener 非 aiy → player_id=0) */
+            C_AIY = clazz("aiy");
+            F_PACKET_LISTENER = clazz("sd").getDeclaredField("o");
+            F_PACKET_LISTENER.setAccessible(true);
             reflected = true;
             System.out.println("Mosaic agent: hook reflection ready");
         } catch (Throwable t) {
@@ -442,6 +472,54 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("onPlayerDeath", t); }
     }
 
+    /* ---- 注入 hook:网络域(Task 6;Connection 双向挂钩)
+       入站:sd.channelRead0(ChannelHandlerContext,Object)——包解码后入口
+       (netty channelRead instanceof 校验后调用,仅真实包到达);
+       出站:sd.a(Packet,PacketSendListener,ConnectionProtocol,ConnectionProtocol)
+       = doSendPacket——1.20.1 发送漏斗,包编码前出口(brief 的
+       channelWrite(ChannelHandlerContext,Object,ChannelPromise) 不存在于
+       1.20.1 Connection,javap 实测,详见头注释)。
+       载荷 12B = mosaic_ev_network { player_id, packet_id, size_hint=0 }:
+       player_id = sd.o(packetListener) instanceof aiy(ServerGamePacketListener
+       Impl)→ aiy.b 字段(player);登录/状态/握手阶段 listener 非 aiy → 0。
+       packet_id = PacketMap.OBFS 按 p.getClass().getName()(混淆全名)查表,
+       未命中 → 0(UNKNOWN)。
+       防递归:钩子只读字段 + 查表 + 派发,不触发任何收发包路径(派发本身
+       不经网络;包路径触发的事件在钩子外)。 ---- */
+    public static void onPacketReceived(Object conn, Object packet) {
+        try { dispatchPacket(conn, packet, 10); }
+        catch (Throwable t) { logErr("onPacketReceived", t); }
+    }
+
+    public static void onPacketSent(Object conn, Object packet) {
+        try { dispatchPacket(conn, packet, 11); }
+        catch (Throwable t) { logErr("onPacketSent", t); }
+    }
+
+    private static void dispatchPacket(Object conn, Object packet, int idx) {
+        if (rt == 0) return;
+        resolve();
+        if (!reflected) return;
+        int playerId = 0;
+        try {
+            Object listener = F_PACKET_LISTENER.get(conn);
+            if (listener != null && C_AIY.isInstance(listener)) {
+                Object player = F_AIY_PLAYER.get(listener);   /* aiy.b */
+                if (player != null) playerId = (Integer) M_ID.invoke(player);
+            }
+        } catch (Throwable t) { /* listener/player 提取失败 → player_id=0 */ }
+        int packetId = 0;
+        try {
+            Integer id = PacketMap.OBFS.get(packet.getClass().getName());
+            if (id != null) packetId = id;
+        } catch (Throwable t) { /* 查表失败 → 0(UNKNOWN) */ }
+        byte[] b = new byte[12];
+        putIntLE(b, 0, playerId);
+        putIntLE(b, 4, packetId);
+        putIntLE(b, 8, 0);   /* size_hint:v1 恒 0(钩子点无包字节数,见 events.h) */
+        dispatch(idx, b);
+    }
+
     /* ---- 注入 hook:服务端 tick(每 tick 派发,计数在 /mosaic status 显示) ---- */
     public static void onServerTick(Object server) {
         try {
@@ -540,6 +618,12 @@ public final class MosaicHooks {
                 for (int i = 0; i < 2; i++)
                     putIntLE(bc, i * 4, vals.length > i ? vals[i] : 0);
                 return bc;
+            }
+            case "packet_received": case "packet_sent": /* player_id/packet_id/size_hint = 3×u32 */
+            {   byte[] bn = new byte[12];
+                for (int i = 0; i < 3; i++)
+                    putIntLE(bn, i * 4, vals.length > i ? vals[i] : 0);
+                return bn;
             }
             case "block_break": case "block_place":     /* player_id/x/y/z/block_type = 5×u32 */
             case "entity_spawn": {                      /* entity_id/entity_type/x/y/z/dimension/source = 7×u32 */

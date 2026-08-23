@@ -17,9 +17,10 @@ import org.objectweb.asm.*;
 public class InjectCheck {
     public static void main(String[] args) throws Exception {
         String jarPath = args[0];
-        /* 期望注入点 = MosaicTransformer.SPECS 全量(8 类 10 方法;M9 补齐
+        /* 期望注入点 = MosaicTransformer.SPECS 全量(9 类 12 方法;M9 补齐
            aih→onBlockBreak 与 MinecraftServer→onServerTick 两个既有点;
-           Task 5 5.4:cds 改返回值出口钩子 onBlockPlaceResult)。
+           Task 5 5.4:cds 改返回值出口钩子 onBlockPlaceResult;
+           Task 6:sd(Connection)→ onPacketReceived/onPacketSent 双向挂钩)。
            类名 = jar 内条目名:混淆类直接是混淆名,MinecraftServer 未混淆。 */
         String[][] expect = {
             {"dt",  "onCommand", "onChatCommand"},
@@ -29,6 +30,7 @@ public class InjectCheck {
             {"cds", "onBlockPlaceResult"},
             {"alk", "onPlayerJoin", "onPlayerLeave"},
             {"aih", "onBlockBreak"},
+            {"sd",  "onPacketReceived", "onPacketSent"},
             {"net/minecraft/server/MinecraftServer", "onServerTick"},
         };
         JarFile jar = new JarFile(jarPath);

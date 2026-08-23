@@ -20,6 +20,7 @@
 #include "mosaic/runtime.h"
 #include "mosaic/event.h"
 #include "mosaic/events.h"   /* M6-D:目录访问器(契约门禁) */
+#include "mosaic/packets.h"  /* M6-E:包目录访问器(契约门禁) */
 /* M5-2:函数生命周期(pack.h/function.h)、item 描述符(descriptor.h)、驱逐
    (eviction.h)、租约(ownership.h)、依赖(deps.h)、事务(tx.h)、以及内部
    查询/模块装载(find_function_active/find_module_ex/mod_load/mod_unload,
@@ -160,6 +161,17 @@ JNIEXPORT jstring JNICALL Java_mosaic_Bridge_eventCatalogName(JNIEnv *env, jclas
                                                               jint index) {
   (void)cls;
   const char *n = mosaic_event_catalog_name((u32)index);
+  return n ? (*env)->NewStringUTF(env, n) : NULL;
+}
+
+/* M6-E N2:包目录访问器(契约门禁)。返回目录第 index 个包名(静态字符串,
+   NewStringUTF 拷贝);越界(含负 index 经 u32 包装)→ NULL。Java 契约测试
+   遍历全部名字与 PacketCatalogImpl.PACKET_NAMES 逐项比对——packets.c 增删
+   目录名 → Java 比对失败 → 测试红,防包目录跨语言漂移。 */
+JNIEXPORT jstring JNICALL Java_mosaic_Bridge_packetCatalogName(JNIEnv *env, jclass cls,
+                                                               jint index) {
+  (void)cls;
+  const char *n = mosaic_packet_catalog_name((u32)index);
   return n ? (*env)->NewStringUTF(env, n) : NULL;
 }
 

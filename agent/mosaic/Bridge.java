@@ -119,4 +119,8 @@ public final class Bridge {
     /* 目录第 index 个事件名(events.c 静态目录,与 EventImpl.EVENT_NAMES 同序);
        越界/负 index → null。契约测试遍历全部名字与 EVENT_NAMES 逐项比对。 */
     public static native String eventCatalogName(int index);
+    /* M6-E:目录第 index 个包名(packets.c 静态目录,与
+       PacketCatalogImpl.PACKET_NAMES 同序);越界/负 index → null。契约测试
+       遍历全部名字与 PACKET_NAMES 逐项比对。 */
+    public static native String packetCatalogName(int index);
 }

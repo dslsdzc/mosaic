@@ -142,6 +142,8 @@ const mosaic_ev_spec mosaic_events_catalog[] = {
   { "item_transform", MOSAIC_EV_FREQ_LOW, sizeof(mosaic_ev_item) },   /* item */
   { "item_use", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_item) },   /* item */
   { "lightning_strike", MOSAIC_EV_FREQ_LOW, sizeof(mosaic_ev_tick) },   /* world */
+  { "packet_received", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_network) },   /* network */
+  { "packet_sent", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_network) },   /* network */
   { "player_advancement", MOSAIC_EV_FREQ_LOW, sizeof(mosaic_ev_player) },   /* player */
   { "player_armor_change", MOSAIC_EV_FREQ_MID, sizeof(mosaic_ev_player) },   /* player */
   { "player_bed_enter", MOSAIC_EV_FREQ_LOW, sizeof(mosaic_ev_player) },   /* player */

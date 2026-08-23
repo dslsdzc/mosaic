@@ -94,4 +94,7 @@ public final class Native {
     /* M6-D:事件目录访问器(契约门禁用) */
     public static String eventCatalogName(int index) {
         return mosaic.Bridge.eventCatalogName(index); }
+    /* M6-E:包目录访问器(契约门禁用;packets.c ↔ PACKET_NAMES 双向比对) */
+    public static String packetCatalogName(int index) {
+        return mosaic.Bridge.packetCatalogName(index); }
 }

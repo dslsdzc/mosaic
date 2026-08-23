@@ -24,6 +24,7 @@ add_library(mosaic_core STATIC
   src/tx.c
   src/sched.c
   src/events.c
+  src/packets.c
   src/world.c
 )
 target_include_directories(mosaic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -143,6 +144,11 @@ add_test(NAME test_descriptor COMMAND test_descriptor)
 add_executable(test_events tests/test_events.c)
 target_link_libraries(test_events mosaic_core)
 add_test(NAME test_events COMMAND test_events $<TARGET_FILE:test_mod>)
+
+# M6-E:包类型目录 v1(纯常量表,零 fixture;168 类 + 分组 id + 访问器)
+add_executable(test_packets tests/test_packets.c)
+target_link_libraries(test_packets mosaic_core)
+add_test(NAME test_packets COMMAND test_packets)
 
 # M3-2:合成世界模拟器(世界 API + 频率档生成器 + 确定性;动作→事件派发/
 # 生成器/载荷探针集成用例需要 test_mod.so fixture + code_off 5 探针)

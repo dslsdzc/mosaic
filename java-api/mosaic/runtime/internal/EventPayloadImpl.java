@@ -26,10 +26,10 @@ public final class EventPayloadImpl implements MosaicEventPayload {
 
     /** 载荷域:大小与字段数 = events.h 结构体;与 EventCatalogImpl.payloadSize
      *  启发式一致(player=4/player_command=8/block=20/entity=28/
-     *  item·inventory=12/server=0/其余 4)。 */
+     *  item·inventory=12/network=12/server=0/其余 4)。 */
     private enum Domain {
         PLAYER(4, 1), PLAYER_CMD(8, 2), BLOCK(20, 5), ITEM(12, 3),
-        ENTITY(28, 7), TICK(4, 1), EMPTY(0, 0);
+        ENTITY(28, 7), NETWORK(12, 3), TICK(4, 1), EMPTY(0, 0);
         final int size;
         final int count;
         Domain(int size, int count) { this.size = size; this.count = count; }
@@ -79,6 +79,7 @@ public final class EventPayloadImpl implements MosaicEventPayload {
      *  player_command 特判须在 player_ 前缀之前)。 */
     static Domain domainOf(String name) {
         if (name.equals("player_command")) return Domain.PLAYER_CMD;
+        if (name.startsWith("packet_")) return Domain.NETWORK;
         if (name.startsWith("player_")) return Domain.PLAYER;
         if (name.startsWith("block_")) return Domain.BLOCK;
         if (name.startsWith("item_") || name.startsWith("inventory_")) return Domain.ITEM;

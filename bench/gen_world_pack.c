@@ -1,15 +1,17 @@
 /* bench/gen_world_pack.c — M4-2:1.20.1 服务端世界 pack 生成器。
  *
- * 默认模式(world.pack):1 模块 × 23 函数(libtest_mod.so 的 code_off 0 =
- * code_inc,计数 state),10 个事件 × 每事件 2-3 个订阅函数(计数 state):
+ * 默认模式(world.pack):1 模块 × 27 函数(libtest_mod.so 的 code_off 0 =
+ * code_inc,计数 state),12 个事件 × 每事件 2-3 个订阅函数(计数 state):
  *   player_join(2)、player_leave(2)、block_break(3)、tick(3)、
  *   server_command(3)、block_place(2)、entity_spawn(2)、
- *   player_chat(2)、player_death(2)、player_command(2)
+ *   player_chat(2)、player_death(2)、player_command(2)、
+ *   packet_received(2)、packet_sent(2)
  * ——事件名与 agent 注入的 hook 派发名(com.mosaic.agent.MosaicHooks)一致,
  *   派发计数可在 /mosaic status 观察(每订阅者一次执行)。
  *   (M8-D:事件集加入 block_place/entity_spawn/player_chat/player_death,
  *   对应 M8-D 新增 4 个注入 hook;Task 5:加入 player_command,对应
- *   onChatCommand 的 chat 命令漏斗派发)
+ *   onChatCommand 的 chat 命令漏斗派发;Task 6:加入 packet_received/
+ *   packet_sent,对应 Connection 双向挂钩)
  *
  * [world2] 模式(M4-3:世界内动态加载验证 pack):模块 2 × 6 函数
  * (tick × 3、player_join × 3,全部 code_off 0 计数 state),事件表与
@@ -24,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { N_EV = 10, N_FN = 23, N_TRIG = 23 };
+enum { N_EV = 12, N_FN = 27, N_TRIG = 27 };
 enum { N2_FN = 6, N2_TRIG = 6 };
 
 int main(int argc, char **argv) {
@@ -38,7 +40,7 @@ int main(int argc, char **argv) {
   static const char *ev_names[N_EV] = {
     "player_join", "player_leave", "block_break", "tick", "server_command",
     "block_place", "entity_spawn", "player_chat", "player_death",
-    "player_command",
+    "player_command", "packet_received", "packet_sent",
   };
 
   if (world2) {
@@ -68,12 +70,12 @@ int main(int argc, char **argv) {
     return rc ? 1 : 0;
   }
 
-  /* 1 模块 23 函数 23 触发器 0 依赖 10 事件 */
+  /* 1 模块 27 函数 27 触发器 0 依赖 12 事件 */
   mosaic_pack_builder *b =
       mosaic_pack_builder_create(argv[1], 1, N_FN, N_TRIG, 0, N_EV);
   if (!b) { fprintf(stderr, "gen_world_pack: builder create failed\n"); return 1; }
 
-  static const u32 ev_subs[N_EV] = { 2, 2, 3, 3, 3, 2, 2, 2, 2, 2 };   /* 每事件订阅函数数 */
+  static const u32 ev_subs[N_EV] = { 2, 2, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2 };   /* 每事件订阅函数数 */
 
   mosaic_pack_builder_add_module(b, 1, 1, "world_mod", argv[2]);
 
@@ -81,7 +83,7 @@ int main(int argc, char **argv) {
   for (u32 ev = 0; ev < N_EV; ev++)
     mosaic_pack_builder_add_event(b, ev_names[ev]);
 
-  /* 23 个计数函数(全部 code_off 0 = code_inc,state 64B:counter++/last_event) */
+  /* 27 个计数函数(全部 code_off 0 = code_inc,state 64B:counter++/last_event) */
   u32 local = 0;
   for (u32 ev = 0; ev < N_EV; ev++) {
     for (u32 k = 0; k < ev_subs[ev]; k++) {
