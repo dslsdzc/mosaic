@@ -46,13 +46,13 @@ public interface MosaicProvider {
     @Since(1)
     MosaicStatusEffect statusEffectOf(Object vanillaEffectInstance);
     /** 标签句柄工厂(26.2 TagKey 记录轻参构造 ↔ 1.8.9 无标签系统(jar 无 net.minecraft.
-     *  tags,逆向核实)→ 26.2 真实路径(TagKey registryName;contents 需已绑定标签,
-     *  契约环境未绑定 → 空)+ 双代 null 语义。 */
+     *  tags,逆向核实)→ 26.2 真实路径(TagKey registryName;contents 已绑定标签 →
+     *  真实内容、未绑定 → 空)+ 1.8.9 恒空降级 + 双代 null 语义。 */
     @Since(1)
     MosaicTag tagOf(Object vanillaTag);
-    /** 方块实体句柄工厂(26.2 BlockEntity ↔ 1.8.9 TileEntity)。契约环境不可构造(26.2
-     *  受保护构造器需 BlockEntityType+BlockState、1.8.9 抽象类)→ null 语义为主,
-     *  真实路径在服务端环境。 */
+    /** 方块实体句柄工厂(26.2 BlockEntity ↔ 1.8.9 TileEntity)。契约环境不可轻参构造
+     *  (26.2 构造器 public 但需 BlockEntityType+BlockState 装配、1.8.9 抽象类)→
+     *  null 语义为主,真实路径在服务端环境。 */
     @Since(1)
     MosaicBlockEntity blockEntityOf(Object vanillaBlockEntity);
 }

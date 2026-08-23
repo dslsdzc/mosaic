@@ -5,7 +5,8 @@ package mosaic.vanilla;
 public interface MosaicTag {
     /** 标签注册名(如 "minecraft:planks")。 */
     String registryName();
-    /** 包含的注册表名(26.2 TagKey → 注册表 getTagOrEmpty → Holder.value → getKey;
-     *  标签为数据驱动,契约环境未绑定 → 空)。 */
+    /** 包含的注册表条目名(26.2 已绑定标签 → 真实内容:注册表 getTagOrEmpty →
+     *  Holder.value → getKey;数据驱动,契约环境未绑定 → 空;1.8.9 无标签系统 →
+     *  恒空降级,与 26.2 不对称)。 */
     String[] contents();
 }

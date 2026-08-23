@@ -640,7 +640,7 @@ public final class Vanilla262Provider implements MosaicProvider {
 
     /** 活体实体句柄工厂:26.2 LivingEntity 抽象类,构造需真实 Level(契约环境不可构造,
      *  与 Entity 先例一致)→ null 语义为主,真实路径在服务端环境;health = getHealth()、
-     *  maxHealth = getMaxHealth()、dead = isDeadOrDying()(LivingEntity.java:1171:
+     *  maxHealth = getMaxHealth()、dead = isDeadOrDying()(LivingEntity.java:1172:
      *  getHealth() <= 0.0F || dead)。 */
     public MosaicLivingEntity livingEntityOf(Object vanillaLivingEntity) {
         if (vanillaLivingEntity == null) return new NullSafeLivingEntity();
@@ -690,7 +690,7 @@ public final class Vanilla262Provider implements MosaicProvider {
      *  经 tagKey.registry() 解析对应 BuiltInRegistries 注册表 → getTagOrEmpty(tagKey)
      *  → Holder.value() → 注册表 getKey。标签为数据驱动(标签 JSON 世界加载期经 TagLoader
      *  绑定),契约环境未绑定 → 迭代未绑定 HolderSet.Named 抛 "Trying to access unbound
-     *  tag"(HolderSet.java:171)→ 吸收为空数组;真实内容查询在服务端环境。
+     *  tag"(HolderSet.java:184)→ 吸收为空数组;真实内容查询在服务端环境。
      *  null → null-safe 句柄。 */
     public MosaicTag tagOf(Object vanillaTag) {
         if (vanillaTag == null) return new NullSafeTag();
@@ -737,9 +737,10 @@ public final class Vanilla262Provider implements MosaicProvider {
         throw new NoSuchMethodException("no built-in registry for tag " + target);
     }
 
-    /** 方块实体句柄工厂:26.2 BlockEntity 构造器为受保护(protected BlockEntity
-     *  (BlockEntityType, BlockPos, BlockState)),需 BlockEntityType+BlockState 装配,
-     *  契约环境不可轻参构造 → null 语义为主,真实路径在服务端环境;typeRegistryName =
+    /** 方块实体句柄工厂:26.2 BlockEntity 构造器为 public(BlockEntity.java:51:
+     *  public BlockEntity(BlockEntityType, BlockPos, BlockState)),但需
+     *  BlockEntityType+BlockState 装配,契约环境仍不可轻参构造 → null 语义为主,
+     *  真实路径在服务端环境;typeRegistryName =
      *  getType() → BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey;pos = getBlockPos()
      *  → Vec3i.getX/getY/getZ。 */
     public MosaicBlockEntity blockEntityOf(Object vanillaBlockEntity) {
