@@ -28,7 +28,9 @@ typedef struct {
   int affinity;                          /* -1 = 任意 worker;>=0 = 固定 worker 下标(越界 → submit 失败) */
   mosaic_task_fn fn;                     /* 实际工作;调度器仅负责在依赖满足后于某 worker 线程调用 */
   void *arg;
-  mosaic_checkpoint_fn checkpoint;       /* 可选:运行中被取消时,fn 返回后由调度器调用以保存状态 */
+  mosaic_checkpoint_fn checkpoint;       /* 可选:运行中被取消时,fn 返回后由调度器调用以保存状态;
+                                            尽力而为——取消落在 fn 返回后、终态判定前的决策窗口内
+                                            不调用(语义见 mosaic_sched_cancel 注释) */
   void *checkpoint_ctx;
 } mosaic_task_spec;
 
@@ -57,11 +59,14 @@ int mosaic_sched_wait_all(mosaic_sched *s);
  * - 未开始任务(pending / 就绪 / 已在 worker 队列) :立即取消,fn 不被执行,
  *   不调用 checkpoint,返回 0。
  * - 运行中任务:不可抢占——fn 继续执行到返回;返回 0,任务完成时被标记为
- *   "已取消",且若提供了 checkpoint,调度器在 fn 返回后、完成计数之前调用
- *   checkpoint(t, checkpoint_ctx)(worker 线程内)。因此 wait_all 返回时全部
- *   checkpoint 必然已执行完毕。checkpoint 是任务得知自己被取消的通道(如把
- *   checkpoint_ctx 指向的共享标志位/状态落地);fn 本身无法访问调度器,如需
- *   协作应定期读 checkpoint_ctx 中的共享状态。
+ *   "已取消"。若提供了 checkpoint,调度器在 fn 返回后、完成计数之前于 worker
+ *   线程内调用 checkpoint(t, checkpoint_ctx);wait_all 返回时已执行的 checkpoint
+ *   必然全部执行完毕(完成计数在 checkpoint 之后)。注意:取消落在 fn 返回后、
+ *   终态判定前的决策窗口内时,任务仍以"已取消"收尾(计入 wait_all 返回值)
+ *   但 checkpoint 不调用——checkpoint 是尽力而为,非可靠通道;任务得知自己
+ *   被取消的可靠方式是读取 checkpoint_ctx 指向的共享状态(fn 本身无法访问
+ *   调度器,如需协作应定期读 checkpoint_ctx 中的共享标志位)。
+ *   正常完成(未请求取消)不调用 checkpoint;级联取消也不回调 checkpoint。
  *   注意:fn 与 checkpoint 在 worker 线程内执行,内部不得调用 wait_all 或
  *   destroy(自死锁);cancel 与 submit 可安全调用。
  * - 未知 id 或已终态(done/cancelled):-1。

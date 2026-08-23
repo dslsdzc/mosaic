@@ -40,7 +40,10 @@ struct mosaic_world {
   u32 ticks;
   u32 next_player_id;      /* 单调分配器:1 起,不复用 → 重复 join 同 id 不可能 */
   u32 next_entity_id;
-  u32 last_join_player;    /* 最近加入的活跃玩家(方块事件归属;0 = 无) */
+  u32 last_join_player;    /* 最近 join 的玩家 id(方块事件载荷 player_id 归属;0 = 无)。
+                               join 无条件置位为刚加入者(world_join);leave 仅当离开者 ==
+                               该值才清零(player_leave)——其他玩家离开不改变它,故字段
+                               恒为"最近加入且尚未离场"的玩家或 0(world.h 同语义)。 */
   world_player *players; u32 n_players, cap_players;
   world_entity *entities; u32 n_entities, cap_entities;
 };
@@ -173,6 +176,8 @@ void mosaic_world_player_leave(mosaic_world *w, mosaic_runtime *rt, u32 player_i
   int i = world_player_index(w, player_id);
   if (i < 0) return;                   /* 未知 id → no-op(文档化) */
   w->players[i] = w->players[--w->n_players];   /* swap-remove */
+  /* 仅当离开者就是最近加入者才清零;其他玩家离开不改变 last_join_player
+     (字段语义 = 最近 join 且尚未离场,见结构体注释) */
   if (w->last_join_player == player_id) w->last_join_player = 0;
   world_stage st; memset(&st, 0, sizeof st);
   mosaic_ev_player ev = { player_id };
@@ -355,6 +360,17 @@ static const world_freq_fix g_freq_fixes[] = {
   { "entity_tick",         MOSAIC_EV_FREQ_HIGH, 1,    1, GEN_ENTITY }, /* 目录 HIGH:每存活实体每 tick(位置游走) */
   { "tick",                MOSAIC_EV_FREQ_HIGH, 1,    1, GEN_TICK   }, /* 目录 HIGH:每 tick 1 次 */
 };
+/* 1.5 门禁访问器(契约测试用):覆盖表条目数与条目名(与 g_freq_fixes 同序)
+   ——tests/test_world.c 遍历目录 HIGH 事件断言全部被覆盖表收录或显式排除
+   (装饰性地雷:目录新增 HIGH 事件若不在覆盖表,合成世界静默不派发它)。 */
+u32 world_gen_table_count(void) {
+  return (u32)(sizeof g_freq_fixes / sizeof g_freq_fixes[0]);
+}
+const char *world_gen_table_name(u32 i) {
+  if (i >= world_gen_table_count()) return NULL;
+  return g_freq_fixes[i].name;
+}
+
 /* 表驱动派发:按条目概率抽样一次;命中 → 按 kind 构造载荷派发(返回执行数;
    GEN_JOIN/GEN_SPAWN 返回 world_join/spawn 的派发数) */
 static u64 gen_dispatch_table(mosaic_world *w, mosaic_runtime *rt, const world_freq_fix *f) {

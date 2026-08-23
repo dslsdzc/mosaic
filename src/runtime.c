@@ -182,7 +182,9 @@ mosaic_runtime *mosaic_runtime_open(const char *pack_path, char *errbuf, size_t 
    提交。任何失败路径在提交前 munmap+close 新 pack,rt 状态零改动——
    完全回滚,不残留半挂载 pack(function_count/pack_count/查询/派发不变)。
    挂载后既有 find_function / mosaic_event_dispatch 自动覆盖新 pack
-   (dispatch 遍历 rt->packs;find_* 走范围表二分),无需其他改动。 */
+   (dispatch 遍历 rt->packs;find_* 走范围表二分),无需其他改动。
+   线程安全:非线程安全——须与派发/查询同一线程调用(单线程服务端线程前提,
+   与 README 已知边界一致;跨线程热挂载需调用方自加锁)。 */
 int mosaic_runtime_add_pack(mosaic_runtime *rt, const char *path, char *errbuf, size_t errlen) {
   if (!rt || !path) {
     if (errbuf && errlen) snprintf(errbuf, errlen, "invalid runtime");

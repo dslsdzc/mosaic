@@ -8,6 +8,7 @@
  *  - 亲和性:affinity=1/2 的任务各自只在单一 worker 线程上执行(线程绑定观测)
  *  - 取消:未开始 → 0、fn 不执行、wait_all 计数正确;运行中 → 0 + checkpoint
  *    回调;级联取消;未知 id / 已终态 → -1
+ *  - 取消队尾(worker 队列尾摘除,wq_remove 队尾分支):0、fn 不执行、其余全执行
  *  - 并发正确性:8 worker × 1000 任务随机依赖图(固定种子),pthread 超时看门狗
  *  - submit 参数错:未知依赖 / 重复 id / dep_count 越界 / affinity 越界 → -1
  *  - 集成演示:8 worker 并行物化 32 个冷函数 → 全部 ACTIVE(并行化的是实际工作)
@@ -314,6 +315,36 @@ static void *wait_all_thread(void *arg) {
   c->rc = mosaic_sched_wait_all(c->s);
   return NULL;
 }
+/* ---- 用例 6.5:取消队尾 —— worker 队列尾摘除(wq_remove 队尾分支;M2 遗留
+   曾修复队尾不变式,但无确定性回归测试)。1 worker + 8 任务(20ms/个,无依赖):
+   worker 按 (priority, submit_seq) 序批领(≤8)入队 → 队尾必为最后提交的 607;
+   60ms 时至多完成 3 个,607 必仍在队尾未开始。断言:取消返回 0、607 的 fn
+   不执行、队列其余任务全部执行一次、wait_all 计数 == 1、二次取消 -1。 */
+static _Atomic int g_tail_exec[8];
+static void fn_tail(void *arg) {
+  long i = (long)arg;
+  usleep(20000);
+  atomic_fetch_add(&g_tail_exec[i], 1);
+}
+static void test_cancel_tail(void) {
+  for (int i = 0; i < 8; i++) atomic_init(&g_tail_exec[i], 0);
+  mosaic_sched *s = mosaic_sched_create(1);
+  MT_CHECK(s != NULL);
+  if (!s) return;
+  for (u64 i = 0; i < 8; i++) {
+    mosaic_task_spec sp = { .id = 600 + i, .dep_count = 0, .priority = 0,
+                            .affinity = -1, .fn = fn_tail, .arg = (void *)(long)i };
+    MT_CHECK(mosaic_sched_submit(s, &sp) == 0);
+  }
+  usleep(60000);   /* 20ms/任务:60ms 时至多完成 3 个,607 必在队尾(未开始) */
+  MT_CHECK(mosaic_sched_cancel(s, 607) == 0);   /* 摘除队尾 → wq_remove 队尾分支 */
+  MT_CHECK_EQ_U64(mosaic_sched_wait_all(s), 1); /* 仅 607 取消,其余完成 */
+  for (u64 i = 0; i < 8; i++)
+    MT_CHECK_EQ_U64(atomic_load(&g_tail_exec[i]), i == 7 ? 0 : 1);  /* 607 未执行,其余全执行一次 */
+  MT_CHECK(mosaic_sched_cancel(s, 607) == -1);  /* 已终态 */
+  mosaic_sched_destroy(s);
+}
+
 static void test_concurrent_random(void) {
   const int N = 1000;
   for (int i = 0; i < N; i++) atomic_init(&g_rand_exec[i], 0);
@@ -459,6 +490,7 @@ int main(int argc, char **argv) {
   MT_RUN(test_priority);
   MT_RUN(test_affinity);
   MT_RUN(test_cancel);
+  MT_RUN(test_cancel_tail);
   MT_RUN(test_submit_errors);
   MT_RUN(test_parallel_materialize);
   MT_RUN(test_concurrent_random);   /* 末位:watchdog 超时用 _exit 兜底 */

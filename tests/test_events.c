@@ -1,6 +1,6 @@
 /* tests/test_events.c — M3-1:事件类型 API v1。
    目录完整性(规模/唯一/排序/频率档/载荷签名)+ 二分查找 + 大事件集 pack
-   全链路(300 事件构建 → 打开 → 查找 → 派发执行订阅者 → 关闭;
+   全链路(目录全量事件构建 → 打开 → 查找 → 派发执行订阅者 → 关闭;
    验证 MOSAIC_MAX_EVENTS 64→4096 放宽后构建/查找/派发仍正确)。
    大事件集用例需要 test_mod.so fixture(CMake 传入)。 */
 #include "mosaic/base.h"
@@ -91,8 +91,9 @@ static void test_catalog_lookup(void) {
   MT_CHECK(sj != NULL && sj->freq == MOSAIC_EV_FREQ_LOW);
 }
 
-/* ---- 大事件集 pack:整个目录(205 个事件名,≫ 旧上限 64)构建 → 打开 →
-     查找命中 → 派发执行订阅者 → 关闭(MOSAIC_MAX_EVENTS 放宽后全链路) ---- */
+/* ---- 大事件集 pack:整个目录(mosaic_events_catalog_count 个事件名,≫ 旧
+     上限 64)构建 → 打开 → 查找命中 → 派发执行订阅者 → 关闭
+     (MOSAIC_MAX_EVENTS 放宽后全链路) ---- */
 static int build_big_pack(void) {
   char err[256];
   const u32 n = mosaic_events_catalog_count;
@@ -117,7 +118,7 @@ static void test_big_pack_lookup_and_dispatch(void) {
   MT_CHECK(rt != NULL);
   if (!rt) return;
   /* 抽样 10+ 个事件名:目录排序序 == pack 内 id(注册序 == 排序序),命中必须
-     一致——同时验证运行时二分在 205 事件规模下正确 */
+     一致——同时验证运行时二分在目录全量规模下正确 */
   for (u32 i = 0; i < mosaic_events_catalog_count; i += 20) {
     u32 id = mosaic_runtime_event_id(rt, mosaic_events_catalog[i].name);
     MT_CHECK_EQ_U64(id, i);

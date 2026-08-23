@@ -11,7 +11,8 @@ import mosaic.runtime.MosaicEventHandler;
 import mosaic.runtime.MosaicEventSubscription;
 
 /** 事件域实现:派发 = C 内核订阅者(Native.eventDispatch)+ Java 侧订阅表;
- *  目录 = events.h 205 事件名常量表(Native.eventId 探测注册态)。 */
+ *  目录 = events.h 事件名常量表(数量以 C 目录为准:契约测试经
+ *  Native.eventCatalogName 探测总数与 EVENT_NAMES 双向比对)。 */
 public final class EventImpl implements MosaicEventDispatcher {
     private final RuntimeImpl rt;
     private final Map<Integer, List<MosaicEventHandler>> handlers = new HashMap<>();
@@ -61,7 +62,8 @@ public final class EventImpl implements MosaicEventDispatcher {
         public void close() { unsubscribe(this); }
     }
 
-    /* ---- 目录(events.h 205 名字抄录;注册态经 Native.eventId 探测) ---- */
+    /* ---- 目录(events.h 名字抄录——双端比对基准,数量派生自 C 目录
+           (Native.eventCatalogName 探测),不硬编码;注册态经 Native.eventId 探测) ---- */
     static final class EventCatalogImpl implements MosaicEventCatalog {
         private final RuntimeImpl rt;
         EventCatalogImpl(RuntimeImpl rt) { this.rt = rt; }

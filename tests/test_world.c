@@ -353,8 +353,8 @@ static void test_standard_catalog_chain(void) {
   /* 生成器在标准目录上跑通(全部事件注册 → 无 NONE 跳过):
      1000 tick 后 tick 精确 1000;entity_tick ≥ 存活实体 × ticks(e2 存活,
      生成器 spawn 只增不减);MID 档各事件在动作计数上继续增长;LOW 修正档
-     事件(⚠️3 四项 + toggle 两项 + item_craft/weather/time)长窗口内命中
-     (种子 0x1234 实证;每事件独立抽样,确定性断言) */
+     事件(toggle 两项 + ⚠️3 四项 + item_craft/weather/time)为固定种子
+     0x1234 的精确契约值(见下,1.6) */
   u64 s = mosaic_world_step(w, rt, 1000);
   MT_CHECK(s >= 1000);                                 /* tick 每 tick ≥ 1 次执行 */
   MT_CHECK_EQ_U64(ev_counter(rt, 17), 1000);           /* tick == ticks */
@@ -365,14 +365,70 @@ static void test_standard_catalog_chain(void) {
   MT_CHECK(ev_counter(rt, 11) >= 2);                   /* item_use */
   MT_CHECK(ev_counter(rt, 12) >= 2);                   /* player_chat */
   MT_CHECK(ev_counter(rt, 5) >= 2);                    /* entity_death:动作 1 + 生成器击杀 ≥ 1 */
-  MT_CHECK(ev_counter(rt, 15) + ev_counter(rt, 16) >= 1);  /* toggle_sneak/sprint(5%) */
-  MT_CHECK(ev_counter(rt, 1) + ev_counter(rt, 3) + ev_counter(rt, 6) +
-           ev_counter(rt, 7) >= 1);                    /* ⚠️3 四 LOW 修正档(0.1%) */
-  MT_CHECK(ev_counter(rt, 10) + ev_counter(rt, 18) + ev_counter(rt, 19) >= 1);
-                                                       /* item_craft/weather/time(0.1%) */
+  /* 生成器抽样事件精确契约值(1.6):固定种子 0x1234 的实测期望值,替代
+     "≥ 1 命中"式种子实证断言(0.1% 事件在 1000 tick 窗口内可能零命中,
+     旧断言依赖具体种子碰巧命中——脆弱)。rng 调用序是契约(勿重排):
+     生成器/目录变更改变序列 → 本组值显式失败,须复核后同步更新。 */
+  MT_CHECK_EQ_U64(ev_counter(rt, 15), 34);   /* player_toggle_sneak(5%) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 16), 53);   /* player_toggle_sprint(5%) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 1), 2);     /* block_explode(0.1%;生成 2) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 3), 3);     /* entity_combust(0.1%;生成 3) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 6), 0);     /* entity_explode(0.1%;窗口内零命中) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 7), 0);     /* entity_fall(0.1%;窗口内零命中) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 10), 2);    /* item_craft(0.1%;动作 1 + 生成 1) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 18), 0);    /* time_change(0.1%;窗口内零命中) */
+  MT_CHECK_EQ_U64(ev_counter(rt, 19), 2);    /* weather_change(0.1%;生成 2) */
   MT_CHECK_EQ_U64(mosaic_world_ticks(w), 1000);
   mosaic_world_destroy(w);
   mosaic_runtime_close(rt);
+}
+
+/* ---- 1.5 HIGH 档门禁:目录每个 HIGH 事件必须被生成器覆盖表(g_freq_fixes)
+     收录,或出现在显式排除清单中(理由见下)——目录新增 HIGH 事件若不在覆盖
+     表,合成世界将静默不派发它(装饰性地雷)。排除清单条目同时校验其确为目录
+     HIGH 事件(防拼写错误使门禁空转)。 ---- */
+static void test_high_tier_gate(void) {
+  static const char *EXCLUDED_HIGH[] = {
+    /* 生成器不派发的目录 HIGH 事件(按域分组理由):
+       - block_*(9,除 break/explode/place 已入表):燃烧/蔓延/红石/计划刻/物理
+         等细粒度方块行为——合成世界无方块网格,不模拟;
+       - chunk_load/unload:合成世界无区块网格;
+       - entity_*(11,除 combust/damage/explode/fall/tick 已入表):成因伤害细分
+         (damage_by_*)、进入方块/交互/药水/弹射物/回血/传送——无对应世界状态;
+       - inventory_change:合成世界无背包模型;
+       - player_*(7,除 chat/toggle_* 已入表):命令输入/移动/挥臂/背包点击——
+         合成世界不模拟玩家输入流。 */
+    "block_burn", "block_from_to", "block_ignite", "block_interact",
+    "block_moisture_change", "block_physics", "block_redstone", "block_spread",
+    "block_tick",
+    "chunk_load", "chunk_unload",
+    "entity_block_form", "entity_change_block", "entity_damage_by_block",
+    "entity_damage_by_entity", "entity_enter_block", "entity_interact",
+    "entity_potion_effect", "entity_projectile_hit", "entity_projectile_launch",
+    "entity_regain_health", "entity_teleport",
+    "inventory_change",
+    "player_command", "player_command_preprocess", "player_interact",
+    "player_interact_at_entity", "player_inventory_click", "player_move",
+    "player_swing_arm",
+  };
+  /* 目录每个 HIGH 事件 ∈ 覆盖表 ∪ 排除清单 */
+  for (u32 i = 0; i < mosaic_events_catalog_count; i++) {
+    const mosaic_ev_spec *s = &mosaic_events_catalog[i];
+    if (s->freq != MOSAIC_EV_FREQ_HIGH) continue;
+    int covered = 0;
+    for (u32 k = 0; k < world_gen_table_count(); k++)
+      if (strcmp(s->name, world_gen_table_name(k)) == 0) { covered = 1; break; }
+    if (covered) continue;
+    int excluded = 0;
+    for (size_t k = 0; k < sizeof EXCLUDED_HIGH / sizeof EXCLUDED_HIGH[0]; k++)
+      if (strcmp(s->name, EXCLUDED_HIGH[k]) == 0) { excluded = 1; break; }
+    MT_CHECK(excluded);   /* 目录 HIGH 事件必须入表或显式排除 */
+  }
+  /* 排除清单条目必须真实存在于目录且为 HIGH(防拼写错误使门禁空转) */
+  for (size_t k = 0; k < sizeof EXCLUDED_HIGH / sizeof EXCLUDED_HIGH[0]; k++) {
+    const mosaic_ev_spec *s = mosaic_event_spec_by_name(EXCLUDED_HIGH[k]);
+    MT_CHECK(s != NULL && s->freq == MOSAIC_EV_FREQ_HIGH);
+  }
 }
 
 /* ---- 生成器确定性:同 seed + 同动作序列 + 同 step → 同计数与终态
@@ -425,8 +481,9 @@ static void test_generator_high_tier_counts(void) {
   mosaic_world_entity_spawn(w, rt, 2);
   mosaic_world_entity_spawn(w, rt, 3);
   u64 r = mosaic_world_step(w, rt, 16);
-  /* 干净窗口断言:窗口内生成器未 spawn/kill(种子 0x1 实证),故
-     entity_tick == 3 × 16;若未来 rng 调整破坏该窗口,断言立即显式失败 */
+  /* 干净窗口断言(1.6 固定种子契约):固定种子 0x1 下窗口内生成器未
+     spawn/kill,故 entity_tick == 3 × 16;rng 调用序是契约,若未来调整
+     破坏该窗口,断言立即显式失败(须复核种子或改断言方式) */
   MT_CHECK_EQ_U64(ev_counter(rt, 4), 3);                /* 仅测试自身 3 次 spawn */
   MT_CHECK_EQ_U64(ev_counter(rt, 3), 0);                /* entity_death:窗口内 0 */
   MT_CHECK_EQ_U64(ev_counter(rt, 5), 3 * 16);           /* entity_tick == 实体数 × ticks */
@@ -466,6 +523,7 @@ int main(int argc, char **argv) {
   MT_RUN(test_payload_probe);
   MT_RUN(test_unregistered_events_noop);
   MT_RUN(test_standard_catalog_chain);
+  MT_RUN(test_high_tier_gate);
   MT_RUN(test_generator_determinism);
   MT_RUN(test_generator_high_tier_counts);
   MT_RUN(test_generator_liveness_growth);

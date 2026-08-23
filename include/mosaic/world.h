@@ -75,4 +75,10 @@ void mosaic_world_item_craft(mosaic_world *w, mosaic_runtime *rt, u32 player_id,
    之和;无订阅/事件未注册时为 0,世界仍推进)。 */
 u64 mosaic_world_step(mosaic_world *w, mosaic_runtime *rt, u32 n_ticks);
 
+/* 生成器覆盖表访问器(1.5 HIGH 档门禁用):返回覆盖表(g_freq_fixes)条目数与
+   第 i 条的事件名(与表同序);越界 → NULL。契约测试用它断言目录 HIGH 事件
+   全部被生成器覆盖或显式排除(排除清单在测试侧)。 */
+u32 world_gen_table_count(void);
+const char *world_gen_table_name(u32 i);
+
 #endif

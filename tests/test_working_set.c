@@ -60,6 +60,19 @@ static void test_arena(void) {
   free(p1); free(p2);
 }
 
+/* 栈上直接构造的 runtime 不走 open/close 生命周期(close 末尾会 free(rt),
+   不可用于栈对象),其持有的堆资源(slab 区 + ws 数组)须在测试收尾手动释放
+   ——否则 build-asan 报泄漏(1.3:修前 ws_grow 2×128B + slab 64K+40B)。 */
+static void stack_rt_close(mosaic_runtime *rt) {
+  for (struct slab *s = rt->slabs; s; ) {
+    struct slab *nx = s->next;
+    free(s->start); free(s);
+    s = nx;
+  }
+  free(rt->ws.keys);
+  free(rt->ws.vals);
+}
+
 static void test_cluster_removal(void) {
   /* 开放寻址簇删除回归测试:cap=16,键位混合后 id 1/17/33 仍同余碰撞成簇
      (三个键落同一槽,线性探测占连续三槽)。删除中间的 17 后,33 必须仍然
@@ -80,6 +93,7 @@ static void test_cluster_removal(void) {
   MT_CHECK(ws_find(&rt, 17) == NULL);
   /* 清空资源 */
   for (struct mosaic_fn_obj *f = rt.ws_head; f; f = f->next) fn_free(&rt, f);
+  stack_rt_close(&rt);   /* 1.3:释放栈 runtime 的 slab + ws 数组(ASan 泄漏基线) */
 }
 
 int main(void) {
