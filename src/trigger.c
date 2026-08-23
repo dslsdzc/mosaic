@@ -25,11 +25,25 @@ u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
   if (!rt) return 0;
   rt->dispatch_depth++;
   u32 executed = 0;
+  /* M9:超时预算——入口快照(单线程前提,setter 与派发同线程)。仅 budget != 0
+     才取时钟 + 入口清 last_err(预算生效时每次派发后 last_error 反映本次派发
+     结果,避免陈旧 TIMEOUT 被 agent 告警误报);预算 0 时零开销:不取时钟、
+     不触碰 last_err(与既有行为完全一致)。 */
+  u64 budget_us = rt->dispatch_budget_us;
+  u64 start_ns = budget_us ? now_ns() : 0;
+  if (budget_us) rt->last_err = MOSAIC_OK;
   for (size_t p = 0; p < rt->n_packs; p++) {
     u8 *map = pack_map(rt, p);
     u64 n = hdr_trigger_count(map);          /* 计数不变,循环前读一次 */
     u64 i = trigger_lower_bound(map, event_id);
     while (i < n) {
+      /* M9:订阅者边界超时检查(执行前)。超时 → 跳过剩余订阅者、返回已执行数、
+         last_err = MOSAIC_ERR_TIMEOUT。只能保护"慢函数不阻塞同事件其他订阅者",
+         不能中断正在执行的函数(原生代码不可安全取消)。 */
+      if (budget_us && now_ns() - start_ns > budget_us * 1000ull) {
+        rt->last_err = MOSAIC_ERR_TIMEOUT;
+        goto timeout;
+      }
       /* 每次迭代现算 map/t:mod 回调可能墓碑(内部 mremap MAYMOVE 移动本 pack
          映射),跨 execute 缓存表指针会悬垂(同线程重入同样崩) */
       map = pack_map(rt, p);
@@ -54,6 +68,7 @@ u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
       i++;
     }
   }
+timeout:
   /* 缺陷 2 安全点:flush pending dlclose 只在最外层派发末尾(此时所有 execute
      已返回,栈上无任何模块代码帧,卸载 .so 不悬垂)。mod 回调可能嵌套派发,
      内层末尾的栈上仍压着外层回调的模块代码帧,故只减深度不 flush。 */

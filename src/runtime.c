@@ -281,6 +281,11 @@ void mosaic_runtime_close(mosaic_runtime *rt) {
 
 u32 mosaic_runtime_last_error(const mosaic_runtime *rt) { return rt ? rt->last_err : MOSAIC_ERR_IO; }
 
+/* M9:每事件派发超时预算(us;0 = 不限制,默认 0)。语义见 runtime.h 声明注释。 */
+void mosaic_runtime_set_dispatch_timeout(mosaic_runtime *rt, u64 us) {
+  if (rt) rt->dispatch_budget_us = us;
+}
+
 /* M4-3:已挂载 pack 数(status 观测用) */
 u32 mosaic_runtime_pack_count(const mosaic_runtime *rt) {
   return rt ? (u32)rt->n_packs : 0;

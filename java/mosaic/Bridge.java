@@ -54,6 +54,11 @@ public final class Bridge {
     /* 最后错误码(0 = 无错;语义见 include/mosaic/base.h MOSAIC_ERR_*)。 */
     public static native int lastError(long rt);
 
+    /* M9:每事件派发超时预算(微秒;0 = 不限制,默认 0)。预算只保护"慢函数
+       不阻塞同事件其他订阅者"——超时点在订阅者边界,不能中断正在执行的
+       函数;预算生效时超时后 lastError == MOSAIC_ERR_TIMEOUT。 */
+    public static native void setDispatchTimeout(long rt, long us);
+
     /* ---- M5:函数生命周期 ---- */
     public static native long fnMaterialize(long rt, long fnId);
     public static native int fnTombstone(long rt, long fnHandle);

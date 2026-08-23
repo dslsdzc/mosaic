@@ -10,9 +10,12 @@ package mosaic;
  *   ("mosaic.jni.lib" 属性,MosaicAgent 解出内嵌 libmosaic_jni.so 后写入),
  *   缺失时回退 System.loadLibrary("mosaic_jni")。
  *
- * 源码复制自 java/mosaic/Bridge.java(M4-1);native 方法集
- * (runtimeOpen/runtimeClose/functionCount/eventId/eventDispatch/
- *  workingSetCount/lastError)与载荷约定(小端 byte[])不变。
+ * 源码复制自 java/mosaic/Bridge.java(M4-1);native 方法集与载荷约定
+ * (小端 byte[])不变。全量方法集类别(M4-1 基座 7 个 + M4-3 热挂载 2 个
+ * + M5 生命周期/构建器/查询/item 查询/模块装载/驱逐/租约/事务 + M6-C
+ * 元数据 + M6-D 事件目录 + M9 派发超时 setDispatchTimeout),与
+ * java/mosaic/Bridge.java 经 build_mc_agent.sh grep-diff 逐 native 声明
+ * 一致性检查强制同步(不一致 → 构建失败)。
  */
 public final class Bridge {
     static {
@@ -43,6 +46,11 @@ public final class Bridge {
     public static native int packCount(long rt);
 
     public static native int lastError(long rt);
+
+    /* M9:每事件派发超时预算(微秒;0 = 不限制,默认 0)。预算只保护"慢函数
+       不阻塞同事件其他订阅者"——超时点在订阅者边界,不能中断正在执行的
+       函数;预算生效时超时后 lastError == MOSAIC_ERR_TIMEOUT。 */
+    public static native void setDispatchTimeout(long rt, long us);
 
     /* ---- M5:函数生命周期 ---- */
     public static native long fnMaterialize(long rt, long fnId);

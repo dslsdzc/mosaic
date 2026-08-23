@@ -25,4 +25,10 @@ const mosaic_module_record *mosaic_runtime_find_module(mosaic_runtime *rt, u64 m
 const mosaic_function_record *mosaic_runtime_find_function(mosaic_runtime *rt, u64 fn_id);
 const char *mosaic_runtime_module_string(const mosaic_runtime *rt, const mosaic_module_record *m, u32 off);
 u32 mosaic_runtime_event_id(mosaic_runtime *rt, const char *name);
+/* M9:每事件同步派发超时预算(微秒;0 = 不限制,默认 0)。预算只保护"慢函数
+   不阻塞同事件其他订阅者":超时点在订阅者边界(执行前检查),不能中断正在
+   执行的函数(原生代码不可安全取消)。预算生效时每次派发后 last_error 反映
+   本次派发结果(超时 → MOSAIC_ERR_TIMEOUT);预算 0 时派发零开销(不取时钟、
+   不触碰 last_error,与 M1 热路径纪律一致)。 */
+void mosaic_runtime_set_dispatch_timeout(mosaic_runtime *rt, u64 us);
 #endif

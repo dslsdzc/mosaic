@@ -96,6 +96,9 @@ struct mosaic_runtime {
   struct pack_view *tx_packs;
   size_t n_tx_packs;
   u32 last_err;
+  /* M9:每事件派发超时预算(us;0 = 不限制,默认 0)。只读于派发循环(入口快照,
+     单线程前提——setter 与派发同一线程,与 add_pack 同纪律)。 */
+  u64 dispatch_budget_us;
 };
 
 /* pack 下标解析:0..n_packs-1 = 基础 pack,>= n_packs = tx_packs[i - n_packs]

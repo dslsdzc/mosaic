@@ -17,6 +17,9 @@ import org.objectweb.asm.*;
 public class InjectCheck {
     public static void main(String[] args) throws Exception {
         String jarPath = args[0];
+        /* 期望注入点 = MosaicTransformer.SPECS 全量(8 类 9 方法;M9 补齐
+           aih→onBlockBreak 与 MinecraftServer→onServerTick 两个既有点)。
+           类名 = jar 内条目名:混淆类直接是混淆名,MinecraftServer 未混淆。 */
         String[][] expect = {
             {"dt",  "onCommand", "onChatCommand"},
             {"aif", "onEntitySpawn"},
@@ -24,6 +27,8 @@ public class InjectCheck {
             {"aiy", "onPlayerChat"},
             {"cds", "onBlockPlace"},
             {"alk", "onPlayerJoin", "onPlayerLeave"},
+            {"aih", "onBlockBreak"},
+            {"net/minecraft/server/MinecraftServer", "onServerTick"},
         };
         JarFile jar = new JarFile(jarPath);
         boolean allOk = true;

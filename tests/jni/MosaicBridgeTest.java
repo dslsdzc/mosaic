@@ -98,6 +98,19 @@ public final class MosaicBridgeTest {
               "functionCount unchanged after failed add (got " + Bridge.functionCount(rt2) + ")");
         check(Bridge.packCount(rt2) == 2,
               "packCount unchanged after failed add (got " + Bridge.packCount(rt2) + ")");
+
+        /* 8. M9:派发超时预算——零句柄安全 no-op;预算生效时 lastError 反映
+              本次派发结果(正常完成入口清零 → 0;此处兼验证 failed add 残留的
+              lastError != 0 被下一次派发正确清零) */
+        Bridge.setDispatchTimeout(0, 1000);
+        check(true, "setDispatchTimeout(0, ...) safe no-op");
+        check(Bridge.lastError(rt2) != 0,
+              "precondition: lastError != 0 after failed add (got " + Bridge.lastError(rt2) + ")");
+        Bridge.setDispatchTimeout(rt2, 1000000);   /* 1s >> 正常派发耗时 */
+        int n3 = Bridge.eventDispatch(rt2, join, payload);
+        check(n3 == 3, "eventDispatch == 3 with 1s budget (got " + n3 + ")");
+        check(Bridge.lastError(rt2) == 0,
+              "lastError == 0 after normal budgeted dispatch (got " + Bridge.lastError(rt2) + ")");
         Bridge.runtimeClose(rt2);
 
         System.out.println(failures == 0 ? "ALL JNI TESTS PASSED"

@@ -146,6 +146,14 @@ JNIEXPORT jint JNICALL Java_mosaic_Bridge_lastError(JNIEnv *env, jclass cls,
   return rt != 0 ? (jint)mosaic_runtime_last_error(rt_of(rt)) : 0;
 }
 
+/* M9:每事件派发超时预算(微秒;0 = 不限制,默认 0)。0 句柄为安全空操作。
+   语义见 runtime.h:mosaic_runtime_set_dispatch_timeout 声明注释。 */
+JNIEXPORT void JNICALL Java_mosaic_Bridge_setDispatchTimeout(JNIEnv *env, jclass cls,
+                                                             jlong rt, jlong us) {
+  (void)env; (void)cls;
+  if (rt != 0) mosaic_runtime_set_dispatch_timeout(rt_of(rt), (u64)us);
+}
+
 /* M6-D N2:事件目录访问器(契约门禁)。返回目录第 index 个事件名(静态字符
    串,NewStringUTF 拷贝);越界(含负 index 经 u32 包装)→ NULL。 */
 JNIEXPORT jstring JNICALL Java_mosaic_Bridge_eventCatalogName(JNIEnv *env, jclass cls,

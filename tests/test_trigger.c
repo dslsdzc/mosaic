@@ -210,6 +210,116 @@ static void test_self_tombstone_single_ref(void) {
   mosaic_runtime_close(rt);
 }
 
+/* ---- M9:同步派发超时预算(每事件预算)——慢订阅者不阻塞同事件其他订阅者。
+   语义:预算只在订阅者边界检查(执行前),不能中断正在执行的函数;超时 →
+   跳过剩余订阅者、返回已执行数、last_err = MOSAIC_ERR_TIMEOUT。 ---- */
+static int g_slow_calls = 0;
+static void slow_hook(void *rt_, void *fn_) { (void)rt_; (void)fn_; g_slow_calls++; usleep(50000); }   /* 50ms 慢订阅者 */
+
+/* 1 模块 2 函数都订阅 "budget_ev":fn0 = code_hook(code_off 3,经 state 注入
+   slow_hook),fn1 = code_inc(code_off 0)。fn0 先于 fn1(触发表顺序 = fn 表序)。 */
+static int build_timeout_pack(const char *path) {
+  char err[256];
+  mosaic_pack_builder *b = mosaic_pack_builder_create(path, 1, 2, 2, 0, 1);
+  if (!b) return -1;
+  mosaic_pack_builder_add_event(b, "budget_ev");
+  mosaic_pack_builder_add_module(b, 80, 1, "mod", SO_PATH);
+  mosaic_pack_builder_add_fn(b, 80, 0, 3, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE);
+  mosaic_pack_builder_add_fn(b, 80, 1, 0, 64, 1, 0, MOSAIC_FN_REQUIRES_STATE | MOSAIC_FN_TOMBSTONE_ABLE);
+  mosaic_pack_builder_add_trigger(b, 0, 80ull << 32 | 0);
+  mosaic_pack_builder_add_trigger(b, 0, 80ull << 32 | 1);
+  int rc = mosaic_pack_builder_finish(b, err, sizeof err);
+  mosaic_pack_builder_free(b);
+  return rc;
+}
+
+static mosaic_runtime *open_timeout_rt(mosaic_fn_obj **out_f0, mosaic_fn_obj **out_f1, u32 *out_ev) {
+  char err[256];
+  if (build_timeout_pack("/tmp/mosaic_test_timeout.pack") != 0) return NULL;
+  mosaic_runtime *rt = mosaic_runtime_open("/tmp/mosaic_test_timeout.pack", err, sizeof err);
+  if (!rt) return NULL;
+  *out_ev = mosaic_runtime_event_id(rt, "budget_ev");
+  *out_f0 = mosaic_fn_materialize(rt, 80ull << 32);
+  *out_f1 = mosaic_fn_materialize(rt, (80ull << 32) | 1);
+  if (!*out_f0 || !*out_f1) { mosaic_runtime_close(rt); return NULL; }
+  void *hook_p = (void *)(uintptr_t)slow_hook;
+  memcpy((*out_f0)->state, &rt, sizeof rt);
+  memcpy((u8 *)(*out_f0)->state + 8, out_f0, sizeof *out_f0);
+  memcpy((u8 *)(*out_f0)->state + 16, &hook_p, sizeof hook_p);
+  return rt;
+}
+
+static void test_dispatch_timeout_slow_first(void) {
+  /* 预算 5ms << 慢订阅者 50ms:首个订阅者必然执行(慢),第二个被跳过。
+     断言:执行数 = 1 < 2、last_err = 超时码、后续订阅者未执行。 */
+  mosaic_fn_obj *f0 = NULL, *f1 = NULL; u32 ev = 0;
+  mosaic_runtime *rt = open_timeout_rt(&f0, &f1, &ev);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  mosaic_runtime_set_dispatch_timeout(rt, 5000);
+  g_slow_calls = 0;
+  u32 n = mosaic_event_dispatch(rt, ev, NULL);
+  MT_CHECK_EQ_U64(n, 1);                       /* fn0 执行,fn1 被跳过 */
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_TIMEOUT);
+  MT_CHECK_EQ_U64(*(u32 *)f1->state, 0);       /* 后续订阅者未执行 */
+  MT_CHECK_EQ_U64(g_slow_calls, 1);            /* 慢订阅者本身执行过 */
+  mosaic_runtime_close(rt);
+}
+
+static void test_dispatch_timeout_tight_budget(void) {
+  /* 预算 = 1us:超时可能发生在首个订阅者执行前(0 个执行)或之后(1 个执行,
+     慢订阅者跑完 50ms);不变式:执行数 < 总数、last_err = 超时码、
+     第二个订阅者必未执行。 */
+  mosaic_fn_obj *f0 = NULL, *f1 = NULL; u32 ev = 0;
+  mosaic_runtime *rt = open_timeout_rt(&f0, &f1, &ev);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  mosaic_runtime_set_dispatch_timeout(rt, 1);
+  g_slow_calls = 0;
+  u32 n = mosaic_event_dispatch(rt, ev, NULL);
+  MT_CHECK(n < 2);                             /* 返回数 < 总订阅数 */
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_TIMEOUT);
+  MT_CHECK_EQ_U64(*(u32 *)f1->state, 0);       /* 后续订阅者未执行 */
+  MT_CHECK(g_slow_calls < 2);                  /* 慢订阅者至多执行一次 */
+  mosaic_runtime_close(rt);
+}
+
+static void test_dispatch_timeout_disabled(void) {
+  /* 预算 = 0(默认):与既有行为完全一致——全部订阅者执行、last_err 不被
+     派发触碰(打开后为 MOSAIC_OK,回归断言)。 */
+  mosaic_fn_obj *f0 = NULL, *f1 = NULL; u32 ev = 0;
+  mosaic_runtime *rt = open_timeout_rt(&f0, &f1, &ev);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  g_slow_calls = 0;
+  u32 n = mosaic_event_dispatch(rt, ev, NULL);
+  MT_CHECK_EQ_U64(n, 2);
+  MT_CHECK_EQ_U64(*(u32 *)f1->state, 1);       /* code_inc 执行 1 次 */
+  MT_CHECK_EQ_U64(g_slow_calls, 1);            /* fn0 也执行过 */
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_OK);   /* 派发未触碰 last_err */
+  mosaic_runtime_close(rt);
+}
+
+static void test_dispatch_timeout_recovery(void) {
+  /* 预算生效时每次派发后 last_err 反映本次派发:先超时(TIMEOUT),再放宽预算
+     → 全部执行且 last_err 回到 OK(入口清零,避免陈旧 TIMEOUT 误报)。 */
+  mosaic_fn_obj *f0 = NULL, *f1 = NULL; u32 ev = 0;
+  mosaic_runtime *rt = open_timeout_rt(&f0, &f1, &ev);
+  MT_CHECK(rt != NULL);
+  if (!rt) return;
+  mosaic_runtime_set_dispatch_timeout(rt, 5000);
+  g_slow_calls = 0;
+  MT_CHECK_EQ_U64(mosaic_event_dispatch(rt, ev, NULL), 1);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_ERR_TIMEOUT);
+  MT_CHECK_EQ_U64(g_slow_calls, 1);
+  mosaic_runtime_set_dispatch_timeout(rt, 1000000);   /* 1s >> 50ms 慢订阅者 */
+  MT_CHECK_EQ_U64(mosaic_event_dispatch(rt, ev, NULL), 2);
+  MT_CHECK_EQ_U64(mosaic_runtime_last_error(rt), MOSAIC_OK);
+  MT_CHECK_EQ_U64(g_slow_calls, 2);            /* 慢订阅者两次都执行 */
+  MT_CHECK_EQ_U64(*(u32 *)f1->state, 1);       /* 第二次派发中 fn1 已执行 */
+  mosaic_runtime_close(rt);
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) { fprintf(stderr, "usage: %s <test_mod.so>\n", argv[0]); return 2; }
   SO_PATH = argv[1];
@@ -217,5 +327,9 @@ int main(int argc, char **argv) {
   MT_RUN(test_dispatch_tombstone_restore_cycle);
   MT_RUN(test_dispatch_self_tombstone_reentrancy);
   MT_RUN(test_self_tombstone_single_ref);
+  MT_RUN(test_dispatch_timeout_slow_first);
+  MT_RUN(test_dispatch_timeout_tight_budget);
+  MT_RUN(test_dispatch_timeout_disabled);
+  MT_RUN(test_dispatch_timeout_recovery);
   return MT_RESULT() ? 0 : 1;
 }

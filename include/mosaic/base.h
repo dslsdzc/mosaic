@@ -27,6 +27,7 @@ enum {
   MOSAIC_ERR_ABI = 5,        /* dlopen/dlsym/ABI 不匹配 */
   MOSAIC_ERR_NOMEM = 6,
   MOSAIC_ERR_IO = 7,
+  MOSAIC_ERR_TIMEOUT = 8,   /* 同步派发超时:预算内未完成,剩余订阅者被跳过 */
 };
 #define MOSAIC_U32_NONE 0xFFFFFFFFu
 #define MOSAIC_MAX_EVENTS 4096 /* 事件名上限(名称表 + 触发表引用):事件类型 API

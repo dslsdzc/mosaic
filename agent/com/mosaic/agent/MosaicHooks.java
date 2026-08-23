@@ -70,7 +70,11 @@ public final class MosaicHooks {
 
     private MosaicHooks() {}
 
-    private static long rt;                                     /* 0 = 未打开,全部 no-op */
+    /* volatile:注入 hook 在 Netty 线程/服务端线程交叉调用,rt 在 premain
+       (MosaicAgent 线程)初始化——跨线程可见性由 volatile 保证,避免 hook
+       线程看到过期值 0 而静默 no-op(仅日志可察觉) */
+    private static volatile long rt;                             /* 0 = 未打开,全部 no-op */
+    private static final int MOSAIC_ERR_TIMEOUT = 8;             /* include/mosaic/base.h 枚举,只增不减 */
     private static final String[] EVENTS = {
         "player_join", "player_leave", "block_break", "tick", "server_command",
         "block_place", "entity_spawn", "player_chat", "player_death",
@@ -106,6 +110,11 @@ public final class MosaicHooks {
 
     public static void init(long handle) {
         rt = handle;
+        /* M9:每事件派发超时预算 200ms(0 = 不限制)。慢机世界生成不触发
+           (单次派发微秒级);若某订阅者卡死 > 200ms,后续订阅者被跳过、
+           lastError == MOSAIC_ERR_TIMEOUT,派发后打印告警(仅日志)。
+           预算只保护"慢函数不阻塞同事件其他订阅者",不能中断正在执行的函数。 */
+        Bridge.setDispatchTimeout(rt, 200_000);
         for (int i = 0; i < EVENTS.length; i++)
             EV_IDS[i] = Bridge.eventId(rt, EVENTS[i]);
     }
@@ -346,9 +355,13 @@ public final class MosaicHooks {
             }
         } else if (sub.equals("install")) {
             /* M4-3:世界内动态加载——运行中挂载新 pack(零重启),挂载后下个
-               tick 的派发即覆盖其订阅者(dispatch 遍历 rt->packs) */
+               tick 的派发即覆盖其订阅者(dispatch 遍历 rt->packs)。
+               [M9 修复] 路径含空格:split("\\s+") 会截断 parts[2],改为取
+               "install " 前缀之后的整段命令串(indexOf("install") + 8 =
+               "install " 长度 8)。 */
             if (parts.length < 3) { usage(); return; }
-            String p = parts[2];
+            String p = cmd.substring(cmd.indexOf("install") + 8).trim();
+            if (p.isEmpty()) { usage(); return; }
             long before = Bridge.functionCount(rt);
             int rc = Bridge.runtimeAddPack(rt, p);
             if (rc == 0) {
@@ -381,6 +394,7 @@ public final class MosaicHooks {
             int n = Bridge.eventDispatch(rt, EV_IDS[idx], b);
             if (n > 0) EV_EXEC[idx] += n;
             EV_CALLS[idx]++;
+            warnIfTimeout(idx);
             System.out.println("Mosaic agent: test dispatch " + ev + " -> executed=" + n);
         } else {
             usage();
@@ -414,12 +428,29 @@ public final class MosaicHooks {
         }
     }
 
-    /* 派发:事件未注册(-1)→ 跳过;返回执行数累积到静态计数器 */
+    /* 派发:事件未注册(-1)→ 跳过;返回执行数累积到静态计数器。
+       M9:派发后检查超时(预算生效时 lastError 反映本次派发结果;
+       200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警)。 */
     private static void dispatch(int idx, byte[] payload) {
         if (EV_IDS[idx] < 0) return;
         int n = Bridge.eventDispatch(rt, EV_IDS[idx], payload);
         if (n > 0) EV_EXEC[idx] += n;
         EV_CALLS[idx]++;
+        warnIfTimeout(idx);
+    }
+
+    /* 超时告警(仅日志):每事件每次超时至多一条,且节流 5s——慢订阅者常驻
+       时不刷屏;语义:该事件预算内未完成,剩余订阅者被跳过(正在执行的函数
+       不受影响,不能被中断)。 */
+    private static long lastTimeoutWarn = 0;
+    private static void warnIfTimeout(int idx) {
+        if (Bridge.lastError(rt) != MOSAIC_ERR_TIMEOUT) return;
+        long now = System.currentTimeMillis();
+        if (now - lastTimeoutWarn < 5000) return;
+        lastTimeoutWarn = now;
+        System.out.println("Mosaic agent: WARN event \"" + EVENTS[idx]
+                + "\" dispatch exceeded budget: slow subscriber(s) skipped"
+                + " (err=" + MOSAIC_ERR_TIMEOUT + ")");
     }
 
     private static void putIntLE(byte[] b, int off, int v) {
