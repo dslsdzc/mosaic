@@ -150,7 +150,7 @@ const mosaic_ev_spec mosaic_events_catalog[] = {
   { "player_bucket_empty", MOSAIC_EV_FREQ_MID, sizeof(mosaic_ev_player) },   /* player */
   { "player_bucket_fill", MOSAIC_EV_FREQ_MID, sizeof(mosaic_ev_player) },   /* player */
   { "player_chat", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_player) },   /* player */
-  { "player_command", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_player) },   /* player */
+  { "player_command", MOSAIC_EV_FREQ_LOW, sizeof(mosaic_ev_player_command) },   /* player */
   { "player_command_preprocess", MOSAIC_EV_FREQ_HIGH, sizeof(mosaic_ev_player) },   /* player */
   { "player_command_send", MOSAIC_EV_FREQ_MID, sizeof(mosaic_ev_player) },   /* player */
   { "player_consume_item", MOSAIC_EV_FREQ_MID, sizeof(mosaic_ev_player) },   /* player */

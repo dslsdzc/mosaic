@@ -396,8 +396,9 @@ static void test_high_tier_gate(void) {
        - entity_*(11,除 combust/damage/explode/fall/tick 已入表):成因伤害细分
          (damage_by_*)、进入方块/交互/药水/弹射物/回血/传送——无对应世界状态;
        - inventory_change:合成世界无背包模型;
-       - player_*(7,除 chat/toggle_* 已入表):命令输入/移动/挥臂/背包点击——
-         合成世界不模拟玩家输入流。 */
+       - player_*(6,除 chat/toggle_* 已入表;player_command 已降 LOW(Task 5
+         5.3,chat 命令漏斗低频事件,不在 HIGH 门禁范围)):移动/挥臂/背包点击
+         /命令前处理——合成世界不模拟玩家输入流。 */
     "block_burn", "block_from_to", "block_ignite", "block_interact",
     "block_moisture_change", "block_physics", "block_redstone", "block_spread",
     "block_tick",
@@ -407,7 +408,7 @@ static void test_high_tier_gate(void) {
     "entity_potion_effect", "entity_projectile_hit", "entity_projectile_launch",
     "entity_regain_health", "entity_teleport",
     "inventory_change",
-    "player_command", "player_command_preprocess", "player_interact",
+    "player_command_preprocess", "player_interact",
     "player_interact_at_entity", "player_inventory_click", "player_move",
     "player_swing_arm",
   };

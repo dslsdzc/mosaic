@@ -130,13 +130,15 @@ public final class EventImpl implements MosaicEventDispatcher {
             "world_unload",
         };
 
-        /** 载荷大小 = events.h 域结构体:player=4B、block/entity=20B、item=12B、
-         *  server=0(空)、其余(world 周期等)= 4B。 */
+        /** 载荷大小 = events.h 域结构体:player=4B、player_command=8B、
+         *  block=20B、entity=28B、item=12B、server=0(空)、其余(world 周期
+         *  等)= 4B。 */
         static int payloadSize(String name) {
+            if (name.equals("player_command")) return 8;    /* mosaic_ev_player_command */
             if (name.startsWith("player_")) return 4;
             if (name.startsWith("block_")) return 20;
             if (name.startsWith("item_") || name.startsWith("inventory_")) return 12;
-            if (name.startsWith("entity_")) return 20;
+            if (name.startsWith("entity_")) return 28;      /* mosaic_ev_entity 含 dimension/source */
             if (name.startsWith("server_")) return 0;
             return 4;
         }

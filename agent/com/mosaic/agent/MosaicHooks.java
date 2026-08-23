@@ -33,6 +33,10 @@ import java.lang.reflect.Method;
  *       M8-D:block_place 注入点——1.20.1 放置成功路径:place() 校验通过后
  *       才调用 placeBlock,入参 state = 实际放置的方块状态(比 useItemOn
  *       入口更精准:useItemOn 对任何右键交互触发,且拿不到放置后状态))
+ *       [Task 5] 5.4:注入改为返回值出口钩子(onBlockPlaceResult):方法所有
+ *       IRETURN 前 dup 返回值 + ALOAD 入口存入新局部槽的 ctx/state → 钩子
+ *       收到真实返回值;返回 false(放置失败)不派发 block_place(语义与
+ *       block_break 破坏前状态一致;文档注明)。
  *   - net.minecraft.server.level.ServerLevel        -> aif
  *       addFreshEntity(Entity)                       -> b  (desc (Lbfj;)Z;
  *       M8-D:服务端实体生成统一漏斗——反汇编证实 addFreshEntity → addEntity
@@ -43,6 +47,8 @@ import java.lang.reflect.Method;
  *       (handleChatCommand → performChatCommand → dt.a(ParseResults,String)),
  *       不触发本 hook,与 player_chat/player_command 语义划分一致)
  *       字段 player -> b(net.minecraft.server.level.ServerPlayer)
+ *       [Task 5] 5.5:钩子入参追加包对象(packet = 方法第 2 参 local 1),
+ *       从 ServerboundChatPacket.message = zi.a 提取消息文本(Java 侧暴露)。
  *   - net.minecraft.server.level.ServerPlayer       -> aig
  *       die(DamageSource)                            -> a  (desc (Lben;)V;
  *       M8-D:player_death 注入点;另有 actuallyHurt = a(Lben;F)Z 区分)
@@ -59,12 +65,25 @@ import java.lang.reflect.Method;
  *     CommandContextBuilder.getSource()(brigadier 未混淆,javap 实测)。
  *     [修正] 1.20.1 EntityType 无 getId():bfn.a() 实为
  *     a()Ljava/lang/Class; = mojmap getBaseClass()(javap 实测;此前误作
- *     EntityType.getId)——注册 id 需 BuiltInRegistries.ENTITY_TYPE 访问
- *     (混淆名待后续核实),entity_type 载荷暂为 0(记录为后续项)
+ *     EntityType.getId)——注册 id 需 BuiltInRegistries.ENTITY_TYPE 访问。
+ *   - [Task 5 新增,2026-08-23 server_mappings(0b4dba04…) + javap 实测
+ *     server-1.20.1.jar 核实,记录见 .superpowers/sdd/task-5-report.md]:
+ *     BuiltInRegistries -> jb、ENTITY_TYPE 字段 -> h(public static final
+ *     gz<bfn<?>>)、Registry.getId(Object) -> hr.a(T)(public abstract int
+ *     a(T))、Entity.getType() -> bfj.ae()(public bfn<?> ae())、
+ *     Entity.level() -> bfj.dI()(public cmm dI())、
+ *     Level.dimension() -> cmm.ac()(public acp<cmm> ac())、
+ *     ResourceKey.location() -> acp.a()(public acq a())、
+ *     ServerboundChatPacket.message -> zi.a(private final String,
+ *     accessor a())、CommandSourceStack.getPlayer() -> ds.i()(public aig
+ *     i())。source 字段:1.20.1 addFreshEntity 入口钩子点不可得生成来源,
+ *     载荷固定 0(注释注明)。
  *
  * 载荷(小端 LE,与 include/mosaic/events.h 一致):
  *   player_join/player_leave/tick/player_chat/player_death = 4B u32;
- *   block_break/block_place/entity_spawn = 20B(5×u32)。
+ *   player_command = 8B(player_id + cmd_hash 2×u32);
+ *   block_break/block_place = 20B(5×u32);
+ *   entity_spawn = 28B(entity_id/entity_type/x/y/z/dimension/source 7×u32)。
  */
 public final class MosaicHooks {
 
@@ -78,6 +97,7 @@ public final class MosaicHooks {
     private static final String[] EVENTS = {
         "player_join", "player_leave", "block_break", "tick", "server_command",
         "block_place", "entity_spawn", "player_chat", "player_death",
+        "player_command",   /* Task 5 5.3:chat 命令漏斗(onChatCommand)派发 */
     };
     private static final int[] EV_IDS = new int[EVENTS.length];
     private static final long[] EV_EXEC = new long[EVENTS.length];   /* dispatch 返回执行数累积 */
@@ -93,20 +113,36 @@ public final class MosaicHooks {
     private static Method M_GET_X, M_GET_Y, M_GET_Z;  /* gu.a/b/c(J)I */
     private static Method M_BLOCK_ID;      /* cpn.i(Ldcb;)I */
     private static Method M_TICK_COUNT;    /* MinecraftServer.ag()I */
-    /* M8-D:entity_spawn 载荷(1.20.1 EntityType 无 getId();注册 id 需
-       BuiltInRegistries.ENTITY_TYPE(混淆名待后续核实),
-       此处 entity_type 暂为 0 —— 记录为后续项) */
+    /* M8-D:entity_spawn 载荷(1.20.1 EntityType 无 getId()——注册 id 经
+       BuiltInRegistries.ENTITY_TYPE = jb.h、Registry.getId = hr.a(T),
+       Task 5 5.1/5.2 已核实并实现) */
     private static Method M_ENT_X, M_ENT_Y, M_ENT_Z;  /* bfj.dn/dp/dt()D */
+    private static Method M_ENT_TYPE;     /* 5.1:bfj.ae()=Entity.getType() */
+    private static Field  F_REG_ENTITY_TYPE;   /* 5.1:jb.h=BuiltInRegistries.ENTITY_TYPE */
+    private static Method M_REG_ENTITY_ID;     /* 5.1:hr.a(T)=Registry.getId(Object) */
+    private static Method M_ENT_LEVEL;    /* 5.2:bfj.dI()=Entity.level() */
+    private static Method M_LEVEL_DIM;    /* 5.2:cmm.ac()=Level.dimension() */
+    private static Method M_RESKEY_LOC;   /* 5.2:acp.a()=ResourceKey.location() */
     /* M8-D:player_chat 载荷(aiy 的 player 字段) */
     private static Field  F_AIY_PLAYER;    /* aiy.b (ServerGamePacketListenerImpl.player) */
+    private static Method M_CHAT_MSG;      /* 5.5:zi.a()=ServerboundChatPacket.message() */
     /* M8-D:block_place 载荷(BlockPlaceContext 继承 cij=UseOnContext) */
     private static Method M_CTX_PLAYER;    /* cij.o()Lbyo; (getPlayer,可 null) */
     private static Method M_CTX_POS;       /* cij.a()Lgu; (getClickedPos) */
     /* M8-D:chat 命令 source 提取(brigadier 未混淆,但由 bundler 加载器加载) */
     private static Method M_PARSE_CTX;     /* ParseResults.getContext() */
     private static Method M_CTX_SRC;       /* CommandContextBuilder.getSource() */
+    private static Method M_SRC_PLAYER;    /* 5.3:ds.i()=CommandSourceStack.getPlayer() */
     private static boolean reflected = false;
     private static boolean resolveWarned = false;
+
+    /* 5.5:反馈通道——最近 chat 消息文本与 chat 命令 source
+       (CommandSourceStack,ds)暴露给 Java 处理方(静态 accessor,供回复玩家;
+       无客户端时仅 /mosaic test 与日志可达,真实值需客户端触发) */
+    private static volatile String chatMessage;
+    private static volatile Object chatSource;
+    public static String chatMessage() { return chatMessage; }
+    public static Object chatSource() { return chatSource; }
 
     public static void init(long handle) {
         rt = handle;
@@ -142,14 +178,28 @@ public final class MosaicHooks {
             M_GET_Z = gu.getMethod("c", long.class);
             M_BLOCK_ID = clazz("cpn").getMethod("i", clazz("dcb"));
             M_TICK_COUNT = clazz("net.minecraft.server.MinecraftServer").getMethod("ag");
-            /* M8-D:entity_spawn(x/y/z;entity_type 载荷暂为 0——bfn.a() 实为
-               getBaseClass()Ljava/lang/Class;,1.20.1 EntityType 无 getId) */
+            /* Task 5 5.1/5.2:entity_spawn 真实载荷(混淆名经 server_mappings
+               + javap 实测核实,记录见 MosaicHooks 头注释)
+               - bfj.ae() = Entity.getType() → EntityType(bfn)
+               - jb.h = BuiltInRegistries.ENTITY_TYPE(静态字段,public)
+               - hr.a(T) = Registry.getId(Object) → 注册 id(1.20.1 EntityType
+                 无 getId();bfn.a() 实为 getBaseClass())
+               - bfj.dI() = Entity.level()、cmm.ac() = Level.dimension()、
+                 acp.a() = ResourceKey.location() → 维度 location 串 */
             M_ENT_X = clazz("bfj").getMethod("dn");
             M_ENT_Y = clazz("bfj").getMethod("dp");
             M_ENT_Z = clazz("bfj").getMethod("dt");
-            /* M8-D:player_chat(aiy.b 字段) */
+            M_ENT_TYPE = clazz("bfj").getMethod("ae");
+            F_REG_ENTITY_TYPE = clazz("jb").getField("h");
+            M_REG_ENTITY_ID = clazz("hr").getMethod("a", Object.class);
+            M_ENT_LEVEL = clazz("bfj").getMethod("dI");
+            M_LEVEL_DIM = clazz("cmm").getMethod("ac");
+            M_RESKEY_LOC = clazz("acp").getMethod("a");
+            /* M8-D:player_chat(aiy.b 字段)+ 5.5:消息文本(zi.a() accessor,
+               ServerboundChatPacket.message) */
             F_AIY_PLAYER = clazz("aiy").getDeclaredField("b");
             F_AIY_PLAYER.setAccessible(true);
+            M_CHAT_MSG = clazz("zi").getMethod("a");
             /* M8-D:block_place(cij = UseOnContext,BlockPlaceContext 父类) */
             M_CTX_PLAYER = clazz("cij").getMethod("o");
             M_CTX_POS = clazz("cij").getMethod("a");
@@ -160,6 +210,9 @@ public final class MosaicHooks {
                IllegalArgumentException 被内层 catch 吞掉) */
             M_PARSE_CTX = clazz("com.mojang.brigadier.ParseResults").getMethod("getContext");
             M_CTX_SRC = clazz("com.mojang.brigadier.context.CommandContextBuilder").getMethod("getSource");
+            /* 5.3:player_command 载荷 player_id —— ds.i() = getPlayer()
+               (ServerPlayer,可 null → player_id=0) */
+            M_SRC_PLAYER = clazz("ds").getMethod("i");
             reflected = true;
             System.out.println("Mosaic agent: hook reflection ready");
         } catch (Throwable t) {
@@ -227,22 +280,48 @@ public final class MosaicHooks {
     /* ---- 注入 hook:游戏内聊天命令(M8-D;dt.a(ParseResults,String) =
        performCommand(ParseResults,String) 入口;signature 无 CommandSourceStack
        参数,从 ParseResults.getContext()(= CommandContextBuilder,javap 实测)
-       .getSource() 反射提取;提取值当前被丢弃,但链路必须正确——feedback
-       通道为后续项) ---- */
+       .getSource() 反射提取;提取值存入 chatSource(5.5 反馈通道,静态
+       accessor 暴露给 Java 处理方)。
+       Task 5 5.3:非 /mosaic 命令 → 派发 player_command(player_id +
+       FNV-1a-32(命令文本去前导 '/'))——chat 命令漏斗) ---- */
     public static boolean onChatCommand(Object results, String cmd) {
         try {
             /* 提取 source(失败不阻断:/mosaic 处理不依赖 source) */
             if (results != null && M_PARSE_CTX != null && M_CTX_SRC != null) {
                 try {
                     Object ctx = M_PARSE_CTX.invoke(results);
-                    if (ctx != null) M_CTX_SRC.invoke(ctx);
+                    if (ctx != null) chatSource = M_CTX_SRC.invoke(ctx);
                 } catch (Throwable t) { /* 提取失败按 null 处理 */ }
             }
-            return handleCommand(cmd);
+            if (handleCommand(cmd)) return true;
+            if (rt != 0 && reflected) dispatchPlayerCommand(cmd);
+            return false;
         } catch (Throwable t) {
             logErr("onChatCommand", t);
             return true;   /* 已判定为 /mosaic,消费避免"未知命令"反馈 */
         }
+    }
+
+    /* 5.3:player_command 派发(chat 命令漏斗内非 /mosaic 命令)。
+       载荷 8B = mosaic_ev_player_command { player_id; cmd_hash }:
+       player_id 取 CommandSourceStack.getPlayer()(ds.i())的实体 id,非玩家
+       source → 0;cmd_hash = FNV-1a-32(命令文本去前导 '/')。 */
+    private static void dispatchPlayerCommand(String cmd) {
+        try {
+            if (EV_IDS[9] < 0) return;          /* 事件未注册 → 跳过 */
+            int playerId = 0;
+            if (chatSource != null && M_SRC_PLAYER != null) {
+                try {
+                    Object p = M_SRC_PLAYER.invoke(chatSource);
+                    if (p != null) playerId = (Integer) M_ID.invoke(p);
+                } catch (Throwable t) { /* player 提取失败 → 0 */ }
+            }
+            String body = cmd.startsWith("/") ? cmd.substring(1) : cmd;
+            byte[] b = new byte[8];
+            putIntLE(b, 0, playerId);
+            putIntLE(b, 4, fnv1a32(body));
+            dispatch(9, b);
+        } catch (Throwable t) { logErr("dispatchPlayerCommand", t); }
     }
 
     /* 共享命令处理:仅 "/mosaic" 前缀命令由本 agent 消费 */
@@ -253,13 +332,18 @@ public final class MosaicHooks {
         return true;
     }
 
-    /* ---- 注入 hook:block_place(M8-D;BlockItem.placeBlock(BlockPlaceContext,
-       BlockState) 入口——place() 校验通过后才调 placeBlock,入参 state 即
-       实际放置的方块状态;ctx = BlockPlaceContext(继承 cij=UseOnContext),
-       getPlayer 可能为 null(如发射器放置)→ player_id=0) ---- */
-    public static void onBlockPlace(Object ctx, Object state) {
+    /* ---- 注入 hook:block_place(Task 5 5.4;BlockItem.placeBlock
+       (BlockPlaceContext,BlockState) 返回值出口钩子——transformer 在方法所有
+       IRETURN 前 dup 返回值并 ALOAD 入口存入新局部槽的 ctx/state 后调用
+       本钩子,ok = placeBlock 真实返回值:返回 false(放置失败)不派发
+       block_place(语义与 block_break 破坏前状态一致,文档注明;放置成功
+       过滤 = M8-D 遗留项)。
+       ctx = BlockPlaceContext(继承 cij=UseOnContext),getPlayer 可能为 null
+       (如发射器放置)→ player_id=0) ---- */
+    public static void onBlockPlaceResult(boolean ok, Object ctx, Object state) {
         try {
             if (rt == 0) return;
+            if (!ok) return;              /* 放置失败 → 不派发 */
             resolve();
             if (!reflected) return;
             Object pos = M_CTX_POS.invoke(ctx);
@@ -274,35 +358,70 @@ public final class MosaicHooks {
             putIntLE(b, 12, (Integer) M_GET_Z.invoke(null, packed));
             putIntLE(b, 16, (Integer) M_BLOCK_ID.invoke(null, state));
             dispatch(5, b);
-        } catch (Throwable t) { logErr("onBlockPlace", t); }
+        } catch (Throwable t) { logErr("onBlockPlaceResult", t); }
     }
 
     /* ---- 注入 hook:entity_spawn(M8-D;ServerLevel.addFreshEntity(Entity)
-       入口——服务端实体生成统一漏斗,含带乘客路径) ---- */
+       入口——服务端实体生成统一漏斗,含带乘客路径。
+       Task 5 5.1/5.2:载荷 28B = mosaic_ev_entity { entity_id, entity_type,
+       x, y, z, dimension, source }:
+       - entity_type = BuiltInRegistries.ENTITY_TYPE.getId(entity.getType())
+         (jb.h + hr.a(T);1.20.1 EntityType 无 getId());
+       - dimension = FNV-1a-32(entity.level().dimension().location().toString())
+         (bfj.dI() → cmm.ac() → acp.a() → toString,确定性可复核);
+       - source = 0:1.20.1 addFreshEntity 入口钩子点不可得生成来源
+         (addFreshEntity 无 cause 参数;来源追踪需网络/派生成因链路,超出
+         本钩子能力——不实填充,注释如实) ---- */
     public static void onEntitySpawn(Object e) {
         try {
             if (rt == 0) return;
             resolve();
             if (!reflected) return;
-            byte[] b = new byte[20];
+            byte[] b = new byte[28];
             putIntLE(b, 0, (Integer) M_ID.invoke(e));
-            /* 1.20.1 EntityType 无 getId();注册 id 需 BuiltInRegistries.ENTITY_TYPE
-               (混淆名待后续核实),此处 entity_type 暂为 0 —— 记录为后续项 */
-            putIntLE(b, 4, 0);
+            int typeId = 0;
+            try {
+                Object type = M_ENT_TYPE.invoke(e);               /* getType() */
+                if (type != null) {
+                    Object reg = F_REG_ENTITY_TYPE.get(null);     /* BuiltInRegistries.ENTITY_TYPE */
+                    if (reg != null) typeId = (Integer) M_REG_ENTITY_ID.invoke(reg, type);
+                }
+            } catch (Throwable t) { /* 注册 id 提取失败 → 0 */ }
+            putIntLE(b, 4, typeId);
             putIntLE(b, 8, (int) Math.floor((Double) M_ENT_X.invoke(e)));
             putIntLE(b, 12, (int) Math.floor((Double) M_ENT_Y.invoke(e)));
             putIntLE(b, 16, (int) Math.floor((Double) M_ENT_Z.invoke(e)));
+            int dim = 0;
+            try {
+                Object level = M_ENT_LEVEL.invoke(e);             /* level() */
+                if (level != null) {
+                    Object key = M_LEVEL_DIM.invoke(level);       /* dimension() → ResourceKey */
+                    if (key != null) {
+                        Object loc = M_RESKEY_LOC.invoke(key);    /* location() → ResourceLocation */
+                        if (loc != null) dim = fnv1a32(loc.toString());
+                    }
+                }
+            } catch (Throwable t) { /* dimension 提取失败 → 0 */ }
+            putIntLE(b, 20, dim);
+            putIntLE(b, 24, 0);   /* source:入口钩子不可得生成来源,固定 0 */
             dispatch(6, b);
         } catch (Throwable t) { logErr("onEntitySpawn", t); }
     }
 
     /* ---- 注入 hook:player_chat(M8-D;ServerGamePacketListenerImpl.handleChat
-       入口——非 "/" 聊天包;player = aiy.b 字段) ---- */
-    public static void onPlayerChat(Object handler) {
+       入口——非 "/" 聊天包;player = aiy.b 字段。
+       Task 5 5.5:入参追加 packet(handleChat 第 2 参 = ServerboundChatPacket),
+       消息文本经 zi.a()(ServerboundChatPacket.message)提取,存入 chatMessage
+       (静态 accessor chatMessage() 暴露给 Java 处理方) ---- */
+    public static void onPlayerChat(Object handler, Object packet) {
         try {
             if (rt == 0) return;
             resolve();
             if (!reflected) return;
+            if (packet != null && M_CHAT_MSG != null) {
+                try { chatMessage = (String) M_CHAT_MSG.invoke(packet); }
+                catch (Throwable t) { /* 提取失败保留上次值 */ }
+            }
             Object player = F_AIY_PLAYER.get(handler);
             if (player == null) return;
             byte[] b = new byte[4];
@@ -416,16 +535,34 @@ public final class MosaicHooks {
                 putIntLE(b, 0, vals.length > 0 ? vals[0] : 0);
                 return b;
             }
+            case "player_command": {                    /* player_id/cmd_hash = 2×u32 */
+                byte[] bc = new byte[8];
+                for (int i = 0; i < 2; i++)
+                    putIntLE(bc, i * 4, vals.length > i ? vals[i] : 0);
+                return bc;
+            }
             case "block_break": case "block_place":     /* player_id/x/y/z/block_type = 5×u32 */
-            case "entity_spawn": {                      /* entity_id/entity_type/x/y/z = 5×u32 */
-                byte[] b = new byte[20];
-                for (int i = 0; i < 5; i++)
+            case "entity_spawn": {                      /* entity_id/entity_type/x/y/z/dimension/source = 7×u32 */
+                int n = EVENTS[idx].equals("entity_spawn") ? 7 : 5;
+                byte[] b = new byte[n * 4];
+                for (int i = 0; i < n; i++)
                     putIntLE(b, i * 4, vals.length > i ? vals[i] : 0);
                 return b;
             }
             default:
                 return null;
         }
+    }
+
+    /* FNV-1a-32(dimension location 串与命令文本共用;与报告复算结果一致,
+       确定性可复核) */
+    private static int fnv1a32(String s) {
+        int h = 0x811c9dc5;
+        for (int i = 0; i < s.length(); i++) {
+            h ^= s.charAt(i);
+            h *= 0x01000193;
+        }
+        return h;
     }
 
     /* 派发:事件未注册(-1)→ 跳过;返回执行数累积到静态计数器。

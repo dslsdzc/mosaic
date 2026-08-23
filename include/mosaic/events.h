@@ -12,7 +12,10 @@
 /* ---- 载荷结构体(按域对齐 4 字节;u32 字段天然 4 对齐) ----
    每个域一组事件共享同一载荷签名;触发时由事件源按域结构体填充。 */
 
-typedef struct { u32 player_id; } mosaic_ev_player;   /* 玩家域:加入/离开/重生/死亡/聊天/命令 */
+typedef struct { u32 player_id; } mosaic_ev_player;   /* 玩家域:加入/离开/重生/死亡/聊天 */
+
+typedef struct { u32 player_id; u32 cmd_hash; } mosaic_ev_player_command;
+  /* 玩家域:命令(player_id + FNV-1a-32(命令文本去前导 '/')哈希,确定性可复核) */
 
 typedef struct { u32 player_id; u32 x, y, z; u32 block_type; } mosaic_ev_block;
   /* 方块域:破坏/放置/交互/计划刻 */
@@ -20,8 +23,10 @@ typedef struct { u32 player_id; u32 x, y, z; u32 block_type; } mosaic_ev_block;
 typedef struct { u32 player_id; u32 item_id; u32 slot; } mosaic_ev_item;
   /* 物品域:使用/合成/拾取/丢弃/背包变化 */
 
-typedef struct { u32 entity_id; u32 entity_type; u32 x, y, z; } mosaic_ev_entity;
-  /* 实体域:生成/死亡/受伤/交互/刻 */
+typedef struct { u32 entity_id; u32 entity_type; u32 x, y, z;
+                 u32 dimension; u32 source; } mosaic_ev_entity;
+  /* 实体域:生成/死亡/受伤/交互/刻(尾部 dimension = FNV-1a-32(维度 location
+     串)、source = 生成来源——append-only 扩展,既有字段不动) */
 
 typedef struct { u32 tick_no; } mosaic_ev_tick;       /* 世界周期:刻/保存/加载/昼夜/天气 */
 

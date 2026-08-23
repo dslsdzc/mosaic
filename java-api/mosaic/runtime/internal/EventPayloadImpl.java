@@ -13,19 +13,23 @@ import mosaic.runtime.MosaicEventPayload;
  *  pack(测试包)必须经活跃运行时探测 Native.eventId 反查名称。
  *
  *  domains(events.h 载荷结构体,字段序 = 结构体声明序):
- *    player_*  → mosaic_ev_player {player_id}                       4B
- *    block_*   → mosaic_ev_block  {player_id, x, y, z, block_type}  20B
+ *    player_*    → mosaic_ev_player {player_id}                    4B
+ *    player_command → mosaic_ev_player_command {player_id, cmd_hash} 8B
+ *    block_*     → mosaic_ev_block  {player_id, x, y, z, block_type} 20B
  *    item_* 与 inventory_* → mosaic_ev_item {player_id, item_id, slot} 12B
- *    entity_*  → mosaic_ev_entity {entity_id, entity_type, x, y, z} 20B
- *    server_*  → mosaic_ev_empty {}                                 0B
+ *    entity_*    → mosaic_ev_entity {entity_id, entity_type, x, y, z,
+ *                                    dimension, source}            28B
+ *    server_*    → mosaic_ev_empty {}                               0B
  *    其余(世界周期:tick、world_*、chunk_*、time_change 等)
- *              → mosaic_ev_tick  {tick_no}                          4B */
+ *                → mosaic_ev_tick  {tick_no}                        4B */
 public final class EventPayloadImpl implements MosaicEventPayload {
 
     /** 载荷域:大小与字段数 = events.h 结构体;与 EventCatalogImpl.payloadSize
-     *  启发式一致(player=4/block·entity=20/item·inventory=12/server=0/其余 4)。 */
+     *  启发式一致(player=4/player_command=8/block=20/entity=28/
+     *  item·inventory=12/server=0/其余 4)。 */
     private enum Domain {
-        PLAYER(4, 1), BLOCK(20, 5), ITEM(12, 3), ENTITY(20, 5), TICK(4, 1), EMPTY(0, 0);
+        PLAYER(4, 1), PLAYER_CMD(8, 2), BLOCK(20, 5), ITEM(12, 3),
+        ENTITY(28, 7), TICK(4, 1), EMPTY(0, 0);
         final int size;
         final int count;
         Domain(int size, int count) { this.size = size; this.count = count; }
@@ -71,8 +75,10 @@ public final class EventPayloadImpl implements MosaicEventPayload {
 
     /* ---- 域判定 / 名称反查 / 解码 ---- */
 
-    /** 域判定 = 名称前缀(与 EventCatalogImpl.payloadSize 同一规则,六域全覆盖)。 */
+    /** 域判定 = 名称前缀(与 EventCatalogImpl.payloadSize 同一规则,七域全覆盖;
+     *  player_command 特判须在 player_ 前缀之前)。 */
     static Domain domainOf(String name) {
+        if (name.equals("player_command")) return Domain.PLAYER_CMD;
         if (name.startsWith("player_")) return Domain.PLAYER;
         if (name.startsWith("block_")) return Domain.BLOCK;
         if (name.startsWith("item_") || name.startsWith("inventory_")) return Domain.ITEM;

@@ -79,7 +79,8 @@ Mod Universe (pack 文件:记录 48B/64B/16B,分片可挂载)
 (byte[] 载荷 → 执行数)、`workingSetCount`、`lastError`、
 `runtimeAddPack`(世界内挂载)。载荷约定:
 `byte[]` 与 `include/mosaic/events.h` 载荷结构体**小端一致**,长度 =
-结构体大小(例:方块事件 20B = player_id/x/y/z/block_type;玩家事件 4B)。
+结构体大小(例:方块事件 20B = player_id/x/y/z/block_type;玩家事件 4B、
+player_command 8B、实体事件 28B)。
 
 构建与运行 JNI 测试(需要 JDK 21;JAVA_HOME 未设时用 `/usr/lib/jvm/default`):
 
@@ -110,9 +111,9 @@ bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 
 | ServerPlayerGameMode.destroyBlock(BlockPos) | `aih.a (Lgu;)Z` | `onBlockBreak`(入口,取破坏前状态) |
 | Commands.performPrefixedCommand(CommandSourceStack, String) | `dt.a (Lds;Ljava/lang/String;)I` | `onCommand`(入口,消费 `/mosaic`) |
 | Commands.performCommand(ParseResults, String)(游戏内聊天命令漏斗) | `dt.a (Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I` | `onChatCommand`(入口,消费 `/mosaic`;source 从 ParseResults 提取) |
-| BlockItem.placeBlock(BlockPlaceContext, BlockState) | `cds.a (Lcih;Ldcb;)Z` | `onBlockPlace`(入口,state = 实际放置状态) |
-| ServerLevel.addFreshEntity(Entity) | `aif.b (Lbfj;)Z` | `onEntitySpawn`(入口) |
-| ServerGamePacketListenerImpl.handleChat(ServerboundChatPacket) | `aiy.a (Lzi;)V` | `onPlayerChat`(入口,player = 字段 `aiy.b`) |
+| BlockItem.placeBlock(BlockPlaceContext, BlockState) | `cds.a (Lcih;Ldcb;)Z` | `onBlockPlaceResult`(返回值出口钩子:placeBlock 返回 false 的失败放置不派发 block_place;state = 实际放置状态) |
+| ServerLevel.addFreshEntity(Entity) | `aif.b (Lbfj;)Z` | `onEntitySpawn`(入口;载荷含真实 entity_type 注册 id(经 `BuiltInRegistries.ENTITY_TYPE` = `jb.h`)与 dimension(level.dimension().location() 的 FNV-1a-32)) |
+| ServerGamePacketListenerImpl.handleChat(ServerboundChatPacket) | `aiy.a (Lzi;)V` | `onPlayerChat`(入口;player = 字段 `aiy.b`;消息文本经 `zi.a` = ServerboundChatPacket.message 提取) |
 | ServerPlayer.die(DamageSource) | `aig.a (Lben;)V` | `onPlayerDeath`(入口) |
 | MinecraftServer.tickServer(BooleanSupplier) | `MinecraftServer.a (Ljava/util/function/BooleanSupplier;)V` | `onServerTick`(方法尾,每 tick 派发) |
 
@@ -137,7 +138,8 @@ player_death 四个事件 hook(签名均经 server_mappings + javap 核实,
   前已缓存,setProperty 无效,故 agent 内嵌版 Bridge 静态块按绝对路径加载)。
 - **帧重算**:COMPUTE_FRAMES 类加载期重算,公共父类用服务端定义加载器解析,
   失败回退 Object;任何转换异常 → 该类原样加载(注入不崩服务端)。
-- **事件载荷**小端 LE,与 `events.h` 结构体一致(player 域 4B、block 域 20B)。
+- **事件载荷**小端 LE,与 `events.h` 结构体一致(player 域 4B、
+  player_command 8B、block 域 20B、entity 域 28B(含 dimension/source))。
 
 运行方式:
 

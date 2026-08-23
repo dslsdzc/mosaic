@@ -42,7 +42,10 @@ import org.objectweb.asm.Opcodes;
  *       a(Lcih;Ldcb;)Z = placeBlock(BlockPlaceContext,BlockState)
  *          (1.20.1 放置成功路径的稳定注入点:place() 校验通过后才调
  *          placeBlock,入参 state 即实际放置的方块状态)
- *          → 方法入口注入 onBlockPlace(ctx,state)
+ *          → Task 5 5.4 改为返回值出口钩子 onBlockPlaceResult(ok,ctx,state):
+ *            入口把 ctx/state 存入新局部槽(3/4);方法所有 IRETURN 前
+ *            dup 返回值 + ALOAD 两局部槽 → invokestatic —— 钩子收到
+ *            placeBlock 真实返回值,返回 false(放置失败)不派发
  *   - aif = net.minecraft.server.level.ServerLevel
  *       b(Lbfj;)Z     = addFreshEntity   → 方法入口注入 onEntitySpawn(entity)
  *                                          (服务端实体生成统一漏斗:
@@ -51,7 +54,8 @@ import org.objectweb.asm.Opcodes;
  *   - aiy = net.minecraft.server.network.ServerGamePacketListenerImpl
  *       a(Lzi;)V      = handleChat(ServerboundChatPacket)(非 "/" 聊天包入口;
  *                                          "/" 命令走 zh 包路径,不入此 hook)
- *          → 方法入口注入 onPlayerChat(handler)(player 字段 = aiy.b)
+ *          → 方法入口注入 onPlayerChat(handler,packet)(player 字段 = aiy.b;
+ *            Task 5 5.5:packet = 第 2 参,消息文本提取)
  *   - aig = net.minecraft.server.level.ServerPlayer
  *       a(Lben;)V     = die(DamageSource)→ 方法入口注入 onPlayerDeath(player)
  *   - net/minecraft/server/MinecraftServer
@@ -88,15 +92,19 @@ public final class MosaicTransformer implements ClassFileTransformer {
             Kind.CONSUME, null,
             "onChatCommand", "(Ljava/lang/Object;Ljava/lang/String;)Z");
         /* cds = net.minecraft.world.item.BlockItem(placeBlock(BlockPlaceContext,
-           BlockState) = 1.20.1 放置成功路径的稳定注入点,M8-D) */
-        put("cds", "a", "(Lcih;Ldcb;)Z", Kind.START, new int[]{1, 2},
-            "onBlockPlace", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+           BlockState) = 1.20.1 放置成功路径的稳定注入点,M8-D;Task 5 5.4 改
+           返回值出口钩子:locals = {ctx 入参槽, state 入参槽, 新局部槽 ctx,
+           新局部槽 state}——(Lcih;Ldcb;)Z 无 long/double 入参,新槽 3/4
+           空闲;返回 false(放置失败)不派发) */
+        put("cds", "a", "(Lcih;Ldcb;)Z", Kind.RETVAL, new int[]{1, 2, 3, 4},
+            "onBlockPlaceResult", "(ZLjava/lang/Object;Ljava/lang/Object;)V");
         /* aif = net.minecraft.server.level.ServerLevel(addFreshEntity,M8-D) */
         put("aif", "b", "(Lbfj;)Z", Kind.START, new int[]{1},
             "onEntitySpawn", "(Ljava/lang/Object;)V");
-        /* aiy = ServerGamePacketListenerImpl(handleChat,M8-D) */
-        put("aiy", "a", "(Lzi;)V", Kind.START, new int[]{0},
-            "onPlayerChat", "(Ljava/lang/Object;)V");
+        /* aiy = ServerGamePacketListenerImpl(handleChat,M8-D;Task 5 5.5 追加
+           packet 入参(第 2 参 local 1)供消息文本提取) */
+        put("aiy", "a", "(Lzi;)V", Kind.START, new int[]{0, 1},
+            "onPlayerChat", "(Ljava/lang/Object;Ljava/lang/Object;)V");
         /* aig = net.minecraft.server.level.ServerPlayer(die(DamageSource),M8-D) */
         put("aig", "a", "(Lben;)V", Kind.START, new int[]{0},
             "onPlayerDeath", "(Ljava/lang/Object;)V");
@@ -117,7 +125,10 @@ public final class MosaicTransformer implements ClassFileTransformer {
         DISPLAY.put("net/minecraft/server/MinecraftServer", "net.minecraft.server.MinecraftServer");
     }
 
-    private enum Kind { END, START, CONSUME }
+    /* RETVAL(Task 5 5.4):入口把 locals[0..1] 入参存入新局部槽 locals[2..3];
+       每个 IRETURN 前 dup 返回值 + ALOAD 两局部槽 → invokestatic 钩子
+       (钩子收到真实返回值;局部槽按帧保存,嵌套调用天然安全) */
+    private enum Kind { END, START, CONSUME, RETVAL }
 
     private static final class Spec {
         Kind kind; int[] locals; String hook, hookDesc;
@@ -259,6 +270,13 @@ public final class MosaicTransformer implements ClassFileTransformer {
                 for (int l : spec.locals) super.visitVarInsn(Opcodes.ALOAD, l);
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, HOOKS, spec.hook,
                         spec.hookDesc, false);
+            } else if (spec.kind == Kind.RETVAL) {
+                /* 入口:args locals[0..1] → 新局部槽 locals[2..3]
+                   (COMPUTE_MAXS 自动扩展 max_locals) */
+                super.visitVarInsn(Opcodes.ALOAD, spec.locals[0]);
+                super.visitVarInsn(Opcodes.ASTORE, spec.locals[2]);
+                super.visitVarInsn(Opcodes.ALOAD, spec.locals[1]);
+                super.visitVarInsn(Opcodes.ASTORE, spec.locals[3]);
             } else if (spec.kind == Kind.CONSUME) {
                 super.visitVarInsn(Opcodes.ALOAD, 1);   /* CommandSourceStack */
                 super.visitVarInsn(Opcodes.ALOAD, 2);   /* String command */
@@ -279,6 +297,15 @@ public final class MosaicTransformer implements ClassFileTransformer {
                 /* 每个返回路径前插 loads + invokestatic(返回路径互斥,
                    每次方法调用恰命中一条 → 每调用恰好派发一次) */
                 for (int l : spec.locals) super.visitVarInsn(Opcodes.ALOAD, l);
+                super.visitMethodInsn(Opcodes.INVOKESTATIC, HOOKS, spec.hook,
+                        spec.hookDesc, false);
+            } else if (spec.kind == Kind.RETVAL && opcode == Opcodes.IRETURN) {
+                /* 返回值出口:栈顶 = boolean 返回值。
+                   DUP → [v, v];ALOAD ctx/state → [v, v, ctx, state];
+                   invokestatic (Z;Object;Object;)V 消费 3 → 留 [v] → IRETURN */
+                super.visitInsn(Opcodes.DUP);
+                super.visitVarInsn(Opcodes.ALOAD, spec.locals[2]);
+                super.visitVarInsn(Opcodes.ALOAD, spec.locals[3]);
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, HOOKS, spec.hook,
                         spec.hookDesc, false);
             }

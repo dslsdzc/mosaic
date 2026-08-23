@@ -39,7 +39,8 @@ static void test_catalog_integrity(void) {
       MT_CHECK((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_');
     /* 频率档 ∈ {LOW, MID, HIGH} */
     MT_CHECK(s->freq >= MOSAIC_EV_FREQ_LOW && s->freq <= MOSAIC_EV_FREQ_HIGH);
-    /* 载荷不超过最大域结构体(实体域 20B);0 表示无载荷 */
+    /* 载荷不超过最大域结构体(实体域 28B = mosaic_ev_entity 含
+       dimension/source);0 表示无载荷 */
     MT_CHECK(s->payload_size == 0 || s->payload_size <= sizeof(mosaic_ev_entity));
     /* 排序 + 唯一:相邻条目按长度感知序严格递增(排序是二分前提,唯一是
        builder 重名拒绝的对偶要求) */
@@ -51,6 +52,7 @@ static void test_catalog_integrity(void) {
 static void test_catalog_payload_sizes(void) {
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("block_break")->payload_size, sizeof(mosaic_ev_block));
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("player_join")->payload_size, sizeof(mosaic_ev_player));
+  MT_CHECK_EQ_U64(mosaic_event_spec_by_name("player_command")->payload_size, sizeof(mosaic_ev_player_command));
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("item_use")->payload_size, sizeof(mosaic_ev_item));
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("entity_spawn")->payload_size, sizeof(mosaic_ev_entity));
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("tick")->payload_size, sizeof(mosaic_ev_tick));
@@ -58,6 +60,7 @@ static void test_catalog_payload_sizes(void) {
   MT_CHECK_EQ_U64(mosaic_event_spec_by_name("server_stop")->payload_size, 0);
   /* 对齐 4 字节:所有域结构体大小为 4 的倍数 */
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_player) % 4, 0);
+  MT_CHECK_EQ_U64(sizeof(mosaic_ev_player_command) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_block) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_item) % 4, 0);
   MT_CHECK_EQ_U64(sizeof(mosaic_ev_entity) % 4, 0);
