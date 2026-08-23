@@ -27,8 +27,9 @@ typedef struct { u32 player_id; u32 packet_id; u32 size_hint; } mosaic_ev_networ
   /* 网络域:packet_received/packet_sent(玩家连接的入站/出站包;player_id =
      连接玩家,非游戏阶段(登录/状态/握手)→ 0;packet_id = 包目录 id
      (include/mosaic/packets.h),未命中目录 → 0(UNKNOWN);size_hint = 包
-     大小近似值,v1 恒 0——1.20.1 钩子点(channelRead0/doSendPacket 入口)
-     无包字节数可得,留待后续版本,文档注明) */
+     真实编码/解码字节长度(1.20.1 实测:入站 = PacketDecoder.decode 入口
+     buf.readableBytes()——分帧器切好整包、不含长度前缀 VarInt;出站 =
+     PacketEncoder.encode 出口 out.writerIndex();不可得时 → 0) */
 
 typedef struct { u32 entity_id; u32 entity_type; u32 x, y, z;
                  u32 dimension; u32 source; } mosaic_ev_entity;
@@ -64,7 +65,8 @@ typedef struct { } mosaic_ev_empty;                    /* 服务域:启动/停�
                     拾取/丢弃;smelt 熔炉烧炼;inventory_change 任意背包变化。
    - packet_*     :网络域。packet_received/packet_sent 在连接收/发包时触发
                     (载荷 player_id + packet_id + size_hint;非游戏阶段
-                    player_id=0,size_hint v1 恒 0)。
+                    player_id=0;size_hint = 真实编码/解码字节长度,
+                    不可得时 0)。
    - entity_*     :实体生命周期。spawn/death 生成/死亡;damage 受伤(含
                     damage_by_entity/damage_by_block 成因变体);interact 玩家
                     与实体交互;tick 每刻(高频);explode 爆炸;tame 驯服。

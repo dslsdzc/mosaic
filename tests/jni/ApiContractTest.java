@@ -173,11 +173,14 @@ public class ApiContractTest {
         MosaicRuntime rtNet = MosaicRuntime.open(new String[]{netPackPath});
         int netId = rtNet.eventId("packet_received");
         check(netId >= 0, "M6E packet_received registered");
+        /* Task 1:size_hint 语义 = 真实编码/解码字节长度(不可得时 0)——字段
+           承载任意 u32;契约按非零样例验证(载荷构造/解码与 agent 无关,
+           纯 Java 侧 round-trip) */
         MosaicEventPayload npl = MosaicEventPayload.of(netId,
-                new byte[]{7, 0, 0, 0, (byte) 0x05, 0x01, 0, 0, 0, 0, 0, 0});
+                new byte[]{7, 0, 0, 0, (byte) 0x05, 0x01, 0, 0, 0x2A, 0, 0, 0});
         int[] nf = npl.decodeInts();
-        check(nf.length == 3 && nf[0] == 7 && nf[1] == 0x0105 && nf[2] == 0,
-              "M6E network payload decode {player_id=7, packet_id=0x0105}, got "
+        check(nf.length == 3 && nf[0] == 7 && nf[1] == 0x0105 && nf[2] == 42,
+              "M6E network payload decode {player_id=7, packet_id=0x0105, size_hint=42}, got "
                   + Arrays.toString(nf));
         check(npl.encode().length == 12, "M6E network payload encode 12B");
         try { MosaicEventPayload.of(netId, new byte[8]); check(false, "M6E net payload len mismatch should throw"); }

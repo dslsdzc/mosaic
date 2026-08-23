@@ -116,6 +116,9 @@ bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 
 | ServerGamePacketListenerImpl.handleChat(ServerboundChatPacket) | `aiy.a (Lzi;)V` | `onPlayerChat`(入口;player = 字段 `aiy.b`;消息文本经 `zi.a` = ServerboundChatPacket.message 提取) |
 | ServerPlayer.die(DamageSource) | `aig.a (Lben;)V` | `onPlayerDeath`(入口) |
 | MinecraftServer.tickServer(BooleanSupplier) | `MinecraftServer.a (Ljava/util/function/BooleanSupplier;)V` | `onServerTick`(方法尾,每 tick 派发) |
+| Connection.channelRead0(ChannelHandlerContext, Packet)(SimpleChannelInboundHandler 桥,入站包解码后) | `sd.channelRead0 (Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V` | `onPacketReceived`(入口;包 id + player + size_hint 派发;size 由 PacketDecoder 经 Channel.attr 传入,派发后清除) |
+| PacketDecoder.decode(ChannelHandlerContext, ByteBuf, List)(入站解码入口) | `si.decode (Lio/netty/channel/ChannelHandlerContext;Lio/netty/buffer/ByteBuf;Ljava/util/List;)V` | `onPacketDecodeStart`(入口;buf.readableBytes() = 包真实字节数,存 channel attr) |
+| PacketEncoder.encode(ChannelHandlerContext, Packet, ByteBuf)(出站编码;1.20.1 混淆为 `a`,同类的 `encode(Object,ByteBuf)` 为擦除桥) | `sj.a (Lio/netty/channel/ChannelHandlerContext;Luo;Lio/netty/buffer/ByteBuf;)V` | `onPacketEncodeStart`(入口;out 存 channel attr)+ `onPacketSent`(出口,每 RETURN 前;out.writerIndex() = 包真实字节数;player 经 pipeline 取 Connection) |
 
 (1.20.1 中 mojmap 的 `performCommand(CommandSourceStack,String)` 已被
 ProGuard 内联,**控制台/RCON 命令**统一漏斗 = `performPrefixedCommand`;
@@ -216,9 +219,13 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 ## 已知边界
 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
-- 网络真实路径(内核 + API 面就绪):1.20.1 Connection 双挂钩(doSendPacket 出站 +
-  channelRead0 入站)触发 packet_received/packet_sent 事件,168 包目录(include/
-  mosaic/packets.h;Task 6 服务端 E2E:packet_received calls=6 / packet_sent calls=4);
+- 网络真实路径(内核 + API 面就绪):1.20.1 编解码器挂钩(PacketDecoder.decode 入站
+  大小 + channelRead0 类型/派发、PacketEncoder.encode 出口出站派发)触发
+  packet_received/packet_sent 事件,**size_hint = 真实编码/解码字节长度**(入站 =
+  decode 入口 readableBytes、出站 = encode 出口 writerIndex;不可得时 0;
+  Task 1 服务端 E2E:packet_received calls=6 / packet_sent calls=4,status ping
+  size_hint 非零实测),168 包目录(include/mosaic/packets.h;Task 6 服务端 E2E:
+  packet_received calls=6 / packet_sent calls=4);
   API 面 MosaicNetwork/MosaicPacket/MosaicPacketListener 真实句柄——packetOf 投影
   (typeId = 包目录 id)、listener 注册/注销,双代 Provider 语义映射(26.2 mojmap
   名直接对目录名 / 1.8.9 MCP 语义对照表,1.8.9 独有包 → UNKNOWN(0)),26.2/1.8.9

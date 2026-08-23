@@ -2,9 +2,11 @@ package com.mosaic.agent;
 
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -62,14 +64,31 @@ import org.objectweb.asm.Opcodes;
  *       .superpowers/sdd/task-6-report.md)
  *       channelRead0(Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V
  *          = SimpleChannelInboundHandler 桥接入口(包解码后;netty channelRead
- *          instanceof 校验后仅真实包调用)
- *          → 方法入口注入 onPacketReceived(conn, packet)
- *       a(Luo;Lsl;Lse;Lse;)V = doSendPacket(Packet,PacketSendListener,
- *          ConnectionProtocol,ConnectionProtocol)(1.20.1 发送漏斗,包编码前
- *          出口;[偏差] brief 的 channelWrite(ChannelHandlerContext,Object,
- *          ChannelPromise) 不存在于 1.20.1 Connection——javap 实测 sd 仅
- *          extends SimpleChannelInboundHandler,无 ChannelOutboundHandler)
- *          → 方法入口注入 onPacketSent(conn, packet)
+ *          instanceof 校验后仅真实包调用;typed 版本 a(Ctx;Luo;)V 为 1.20.1
+ *          server.txt 的 channelRead0(Ctx,Packet) 混淆名,javap 双证)
+ *          → 方法入口注入 onPacketReceived(conn, ctx, packet)
+ *          (Task 1:入站派发保留在此——解码后类型经此取;size 由 si.decode
+ *          经 Channel.attr 传至此处,派发后清除,防双计)
+ *       [Task 1 移除] a(Luo;Lsl;Lse;Lse;)V = doSendPacket 出站派发挂钩——
+ *          迁至 sj(PacketEncoder)encode 出口(防双计:每包恰好派发一次)
+ *   - si = net.minecraft.network.PacketDecoder(Task 1;核实见
+ *       .superpowers/sdd/task-1-report.md)
+ *       decode(Lio/netty/channel/ChannelHandlerContext;Lio/netty/buffer/ByteBuf;
+ *          Ljava/util/List;)V = 分帧后每包恰好一次的解码入口(splitter 帧已
+ *          切好整包;buf.readableBytes() = 包字节数)
+ *          → 方法入口注入 onPacketDecodeStart(ctx, buf):大小经
+ *            ctx.channel().attr 传递,channelRead0 派发后清除
+ *   - sj = net.minecraft.network.PacketEncoder(Task 1;核实见
+ *       .superpowers/sdd/task-1-report.md)
+ *       a(Lio/netty/channel/ChannelHandlerContext;Luo;Lio/netty/buffer/ByteBuf;)V
+ *          = encode(ChannelHandlerContext,Packet,ByteBuf)(1.20.1 混淆为 a;
+ *          同类的 encode(Ctx;Object;ByteBuf) 为泛型擦除桥,MessageToByteEncoder
+ *          write → 桥 → a,每包恰好一次;javap 实测 a 只有一个 RETURN(正常
+ *          路径),其余出口为 ATHROW(编码失败不派发 packet_sent))
+ *          → 入口注入 onPacketEncodeStart(ctx, packet, out):out 存入
+ *            ctx.channel().attr;每个 RETURN 前注入 onPacketSent(ctx, packet):
+ *            attr 取 out → writerIndex() = 编码后字节数 → 派发(出站 player
+ *            经 ctx.channel().pipeline().get(sd) 取 Connection 实例)
  *   - net/minecraft/server/MinecraftServer
  *       a(Ljava/util/function/BooleanSupplier;)V = tickServer → 方法尾注入
  *                                          onServerTick(this)(每 tick 派发 "tick")
@@ -84,8 +103,10 @@ public final class MosaicTransformer implements ClassFileTransformer {
 
     private static final String HOOKS = "com/mosaic/agent/MosaicHooks";
 
-    /* 注入规格:internal:name:desc → (kind, locals, hook, hookDesc) */
-    private static final Map<String, Spec> SPECS = new HashMap<>();
+    /* 注入规格:internal:name:desc → (kind, locals, hook, hookDesc) 列表——
+       同一方法可挂多个 hook(sj.a 入口 + 出口,Task 1);访问器按序链式
+       包装,注入顺序 = put 顺序 */
+    private static final Map<String, List<Spec>> SPECS = new HashMap<>();
     static {
         /* alk = net.minecraft.server.players.PlayerList */
         put("alk", "a", "(Lsd;Laig;)V", Kind.END, new int[]{2},
@@ -122,14 +143,33 @@ public final class MosaicTransformer implements ClassFileTransformer {
             "onPlayerDeath", "(Ljava/lang/Object;)V");
         /* sd = net.minecraft.network.Connection(Task 6 网络域)
            入站:channelRead0(ChannelHandlerContext,Object) 桥接入口(包解码后;
-           local 0=this, 1=ctx, 2=packet → 取 {0,2});
-           出站:a(Luo;Lsl;Lse;Lse;)V = doSendPacket 发送漏斗(包编码前;
-           local 1=packet) */
+           local 0=this, 1=ctx, 2=packet → 取 {0,1,2};Task 1:入参追加 ctx,
+           从 channel attr 读 si.decode 入口记录的大小,派发后清除;
+           出站 doSendPacket 挂钩已移除(Task 1 迁至 sj encode 出口) */
         put("sd", "channelRead0",
             "(Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V",
-            Kind.START, new int[]{0, 2},
-            "onPacketReceived", "(Ljava/lang/Object;Ljava/lang/Object;)V");
-        put("sd", "a", "(Luo;Lsl;Lse;Lse;)V", Kind.START, new int[]{0, 1},
+            Kind.START, new int[]{0, 1, 2},
+            "onPacketReceived", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V");
+        /* si = net.minecraft.network.PacketDecoder(Task 1;核实见 task-1-report)
+           decode(ChannelHandlerContext, ByteBuf, List) 入口——splitter 帧
+           切好后每包恰好一次,local 1=ctx, 2=buf(帧整包)→ {1,2};
+           大小 = buf.readableBytes() → channel attr(packet_size) */
+        put("si", "decode",
+            "(Lio/netty/channel/ChannelHandlerContext;Lio/netty/buffer/ByteBuf;Ljava/util/List;)V",
+            Kind.START, new int[]{1, 2},
+            "onPacketDecodeStart", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+        /* sj = net.minecraft.network.PacketEncoder(Task 1;核实见 task-1-report)
+           a(Ctx;Luo;ByteBuf) = encode(ChannelHandlerContext,Packet,ByteBuf),
+           local 1=ctx, 2=packet, 3=out;入口:out 存入 channel attr(enc_buf);
+           出口(唯一 RETURN,javap 实测):attr 取 out → writerIndex() =
+           编码后字节数 → 派发 packet_sent(编码失败 ATHROW 出口不派发) */
+        put("sj", "a",
+            "(Lio/netty/channel/ChannelHandlerContext;Luo;Lio/netty/buffer/ByteBuf;)V",
+            Kind.START, new int[]{1, 2, 3},
+            "onPacketEncodeStart", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V");
+        put("sj", "a",
+            "(Lio/netty/channel/ChannelHandlerContext;Luo;Lio/netty/buffer/ByteBuf;)V",
+            Kind.END, new int[]{1, 2},
             "onPacketSent", "(Ljava/lang/Object;Ljava/lang/Object;)V");
         /* MinecraftServer.tickServer(未混淆) */
         put("net/minecraft/server/MinecraftServer", "a",
@@ -146,6 +186,8 @@ public final class MosaicTransformer implements ClassFileTransformer {
         DISPLAY.put("aiy", "net.minecraft.server.network.ServerGamePacketListenerImpl");
         DISPLAY.put("aig", "net.minecraft.server.level.ServerPlayer");
         DISPLAY.put("sd", "net.minecraft.network.Connection");
+        DISPLAY.put("si", "net.minecraft.network.PacketDecoder");
+        DISPLAY.put("sj", "net.minecraft.network.PacketEncoder");
         DISPLAY.put("net/minecraft/server/MinecraftServer", "net.minecraft.server.MinecraftServer");
     }
 
@@ -164,7 +206,10 @@ public final class MosaicTransformer implements ClassFileTransformer {
 
     private static void put(String cls, String name, String desc, Kind kind,
                             int[] locals, String hook, String hookDesc) {
-        SPECS.put(cls + ":" + name + ":" + desc, new Spec(kind, locals, hook, hookDesc));
+        String key = cls + ":" + name + ":" + desc;
+        List<Spec> list = SPECS.get(key);
+        if (list == null) { list = new ArrayList<Spec>(); SPECS.put(key, list); }
+        list.add(new Spec(kind, locals, hook, hookDesc));
     }
 
     /* 服务端类的定义加载器(1.20.1 bundler 自建 URLClassLoader 加载 unpacked
@@ -248,10 +293,14 @@ public final class MosaicTransformer implements ClassFileTransformer {
                 public MethodVisitor visitMethod(int access, String name, String desc,
                                                  String signature, String[] exceptions) {
                     MethodVisitor mv = super.visitMethod(access, name, desc, signature, exceptions);
-                    Spec spec = SPECS.get(className + ":" + name + ":" + desc);
-                    if (spec == null || mv == null) return mv;
+                    List<Spec> specs = SPECS.get(className + ":" + name + ":" + desc);
+                    if (specs == null || mv == null) return mv;
                     changed[0] = true;
-                    return new InjectingMethodVisitor(mv, spec, retvalMaxLocals);
+                    /* 多 hook 链式包装:外层访问器先注入(入口 hook 先于出口 hook
+                       执行;互不干扰,同一方法不同 hook 各注入一次) */
+                    for (Spec spec : specs)
+                        mv = new InjectingMethodVisitor(mv, spec, retvalMaxLocals);
+                    return mv;
                 }
             };
             new ClassReader(classfileBuffer).accept(cv, 0);

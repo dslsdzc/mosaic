@@ -72,7 +72,11 @@ import java.lang.reflect.Method;
  *       入站:channelRead0(ChannelHandlerContext,Object)(SimpleChannelInbound
  *       Handler 桥接入口,包解码后;netty channelRead 仅对真实包调用本方法)
  *       -> 保持名 channelRead0(protected),desc
- *       (Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V
+ *       (Lio/netty/channel/ChannelHandlerContext;Ljava/lang/Object;)V;
+ *       同类的 typed 版 a(ChannelHandlerContext,Packet) desc
+ *       (Lio/netty/channel/ChannelHandlerContext;Luo;)V = mojmap
+ *       channelRead0(ChannelHandlerContext,Packet)(server.txt 158:171,javap
+ *       双证——桥与 typed 并存,netty 只调桥,桥 cast 后调 typed)
  *       出站:doSendPacket(Packet,PacketSendListener,ConnectionProtocol,
  *       ConnectionProtocol) -> a(private),desc (Luo;Lsl;Lse;Lse;)V
  *       ——1.20.1 发送漏斗(包编码前出口)。[偏差] brief 的
@@ -80,10 +84,41 @@ import java.lang.reflect.Method;
  *       1.20.1 Connection:javap 实测 sd 仅 extends SimpleChannelInboundHandler
  *       (无 ChannelOutboundHandler 实现、无 channelWrite 方法)——以 doSendPacket
  *       替代,语义同(brief 文档注明"包编码前出口")。
+ *       [Task 1] 出站派发已迁离 doSendPacket → PacketEncoder.encode 出口
+ *       (真实字节长度;防双计——旧挂钩已移除,每包恰好派发一次)。
  *       字段 packetListener -> o(private,类型 sk = net.minecraft.network.PacketListener)
  *     net.minecraft.network.protocol.Packet -> uo(接口)、
  *     PacketListener -> sk、PacketSendListener -> sl、
  *     ConnectionProtocol -> se(全部 javap 实测)
+ *   - [Task 1 新增,2026-08-23 server_mappings(同源 server.txt)+ javap -p -s
+ *     实测本地 jar 核实,记录见 .superpowers/sdd/task-1-report.md]:
+ *     net.minecraft.network.PacketDecoder -> si(extends ByteToMessageDecoder)
+ *       decode(ChannelHandlerContext,ByteBuf,List) -> 保持名 decode(protected),
+ *       desc (Lio/netty/channel/ChannelHandlerContext;Lio/netty/buffer/ByteBuf;
+ *       Ljava/util/List;)V——分帧器(splitter)切好整包后每包恰好调用一次,
+ *       入口 buf.readableBytes() = 包字节数(不含分帧器 VarInt 长度前缀;
+ *       压缩开启 = 压缩后字节数 + size 前缀;javap -c 实测 decode 入口先读
+ *       readableBytes 并整帧消费)
+ *     net.minecraft.network.PacketEncoder -> sj(extends
+ *       MessageToByteEncoder<uo<?>>)
+ *       encode(ChannelHandlerContext,Packet,ByteBuf) -> a(protected),
+ *       desc (Lio/netty/channel/ChannelHandlerContext;Luo;Lio/netty/buffer/ByteBuf;)V
+ *       ——真实编码方法(同类的 encode(ChannelHandlerContext,Object,ByteBuf)
+ *       为泛型擦除桥:MessageToByteEncoder.write → 桥 → a,每包恰好一次;
+ *       javap -c 实测 a 仅一个 RETURN(正常路径),其余出口为 ATHROW——编码
+ *       失败不派发 packet_sent);出口 out.writerIndex() = 编码后字节数
+ *       (不含 prepender 追加的 VarInt 长度前缀)
+ *     netty 4.1.82.Final(未混淆,经 serverLoader 加载;javap 实测):
+ *       AttributeKey.valueOf(String) 静态、AttributeMap.attr(AttributeKey)
+ *       → Attribute、Attribute.get()/set(T)(擦除 Object)、
+ *       ByteBuf.readableBytes()/writerIndex()、
+ *       ChannelHandlerContext.channel() → Channel、
+ *       Channel.pipeline() → ChannelPipeline、ChannelPipeline.get(Class)
+ *     pipeline 结构(configureSerialization 反汇编,sd.a(ChannelPipeline,up)):
+ *       addLast 依次 splitter(sp)/decoder(si)/prepender(sq)/encoder(sj)/
+ *       unbundler(sh)/bundler(sg);Connection(sd) 在构造期 addLast
+ *       "packet_handler" 先入——encode 挂钩经 ctx.channel().pipeline()
+ *       .get(sd.class) 取 Connection 实例(不依赖 handler 名)
  *   - [Task 5 新增,2026-08-23 server_mappings(0b4dba04…) + javap 实测
  *     server-1.20.1.jar 核实,记录见 .superpowers/sdd/task-5-report.md]:
  *     BuiltInRegistries -> jb、ENTITY_TYPE 字段 -> h(public static final
@@ -103,7 +138,9 @@ import java.lang.reflect.Method;
  *   block_break/block_place = 20B(5×u32);
  *   entity_spawn = 28B(entity_id/entity_type/x/y/z/dimension/source 7×u32);
  *   packet_received/packet_sent = 12B(3×u32:player_id/packet_id/size_hint;
- *   size_hint v1 恒 0)。
+ *   size_hint = 真实编码/解码字节长度(Task 1 实测;不可得 → 0):入站 =
+ *   PacketDecoder.decode 入口 buf.readableBytes()(分帧器切好整包)、出站 =
+ *   PacketEncoder.encode 出口 out.writerIndex())。
  */
 public final class MosaicHooks {
 
@@ -162,6 +199,20 @@ public final class MosaicHooks {
     /* Task 6:网络域(Connection 双向挂钩;sd = Connection,核实见头注释) */
     private static Class<?> C_AIY;         /* aiy = ServerGamePacketListenerImpl */
     private static Field  F_PACKET_LISTENER; /* sd.o (private, Connection.packetListener) */
+    /* Task 1:netty 反射句柄(未混淆,经 serverLoader 加载;javap 实测核实,
+       见头注释)——跨挂钩大小传递(Channel.attr)与出站 player 提取 */
+    private static Class<?> C_CONN;         /* sd = Connection(pipeline.get 用) */
+    private static Method M_CTX_CHANNEL;    /* ChannelHandlerContext.channel() */
+    private static Method M_CHANNEL_PIPE;   /* Channel.pipeline() */
+    private static Method M_PIPE_GET;       /* ChannelPipeline.get(Class) */
+    private static Method M_ATTR;           /* AttributeMap.attr(AttributeKey) */
+    private static Method M_ATTR_GET;       /* Attribute.get() */
+    private static Method M_ATTR_SET;       /* Attribute.set(Object) */
+    private static Method M_ATTRKEY_VALUEOF; /* AttributeKey.valueOf(String) */
+    private static Method M_BUF_READABLE;   /* ByteBuf.readableBytes() */
+    private static Method M_BUF_WRITER;     /* ByteBuf.writerIndex() */
+    private static Object ATTR_SIZE_KEY;    /* AttributeKey "mosaic_packet_size"(入站) */
+    private static Object ATTR_ENC_KEY;     /* AttributeKey "mosaic_enc_buf"(出站) */
     private static boolean reflected = false;
     private static boolean resolveWarned = false;
 
@@ -258,6 +309,26 @@ public final class MosaicHooks {
             C_AIY = clazz("aiy");
             F_PACKET_LISTENER = clazz("sd").getDeclaredField("o");
             F_PACKET_LISTENER.setAccessible(true);
+            /* Task 1:netty 句柄(未混淆;服务器打包 4.1.82.Final,javap 实测
+               方法签名,见头注释)——AttributeKey.valueOf(String) 静态;
+               AttributeMap.attr(AttributeKey);Attribute.get/set(Object);
+               ByteBuf.readableBytes/writerIndex;ChannelHandlerContext.channel;
+               Channel.pipeline;ChannelPipeline.get(Class)。两把 key 由 valueOf
+               按名取单例(同名同实例),同 MosaicHooks 静态字段 → 注入 hook
+               与 channelRead0 hook 共用同一 AttributeKey。 */
+            C_CONN = clazz("sd");
+            M_CTX_CHANNEL = clazz("io.netty.channel.ChannelHandlerContext").getMethod("channel");
+            M_CHANNEL_PIPE = clazz("io.netty.channel.Channel").getMethod("pipeline");
+            M_PIPE_GET = clazz("io.netty.channel.ChannelPipeline").getMethod("get", Class.class);
+            M_ATTR = clazz("io.netty.util.AttributeMap").getMethod("attr",
+                    clazz("io.netty.util.AttributeKey"));
+            M_ATTR_GET = clazz("io.netty.util.Attribute").getMethod("get");
+            M_ATTR_SET = clazz("io.netty.util.Attribute").getMethod("set", Object.class);
+            M_ATTRKEY_VALUEOF = clazz("io.netty.util.AttributeKey").getMethod("valueOf", String.class);
+            M_BUF_READABLE = clazz("io.netty.buffer.ByteBuf").getMethod("readableBytes");
+            M_BUF_WRITER = clazz("io.netty.buffer.ByteBuf").getMethod("writerIndex");
+            ATTR_SIZE_KEY = M_ATTRKEY_VALUEOF.invoke(null, "mosaic_packet_size");
+            ATTR_ENC_KEY = M_ATTRKEY_VALUEOF.invoke(null, "mosaic_enc_buf");
             reflected = true;
             System.out.println("Mosaic agent: hook reflection ready");
         } catch (Throwable t) {
@@ -497,42 +568,124 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("onPlayerDeath", t); }
     }
 
-    /* ---- 注入 hook:网络域(Task 6;Connection 双向挂钩)
-       入站:sd.channelRead0(ChannelHandlerContext,Object)——包解码后入口
-       (netty channelRead instanceof 校验后调用,仅真实包到达);
-       出站:sd.a(Packet,PacketSendListener,ConnectionProtocol,ConnectionProtocol)
-       = doSendPacket——1.20.1 发送漏斗,包编码前出口(brief 的
-       channelWrite(ChannelHandlerContext,Object,ChannelPromise) 不存在于
-       1.20.1 Connection,javap 实测,详见头注释)。
-       载荷 12B = mosaic_ev_network { player_id, packet_id, size_hint=0 }:
+    /* ---- 注入 hook:网络域(Task 6 + Task 1 挂钩点迁移)
+       入站大小:si.decode(ChannelHandlerContext,ByteBuf,List) 入口——分帧器
+       (splitter)切好整包后每包恰好调用一次,buf.readableBytes() = 包字节数
+       (不含分帧器 VarInt 长度前缀;压缩开启 = 压缩后字节数 + size 前缀)。
+       大小与解码后类型跨挂钩传递:decode 与 channelRead0 同 channel 同 IO
+       线程同步执行(decode → fireChannelRead → channelRead0 单调用栈,
+       无穿插),经 ctx.channel().attr(AttributeKey "mosaic_packet_size")
+       传递——多连接并发安全(attr 按 channel 隔离);channelRead0 派发后
+       清除(set 0)。
+       入站派发:sd.channelRead0(ChannelHandlerContext,Object) 桥接入口(包
+       解码后;netty channelRead instanceof 校验后仅真实包到达)——保留在
+       此(解码后类型经此取)。
+       出站大小 + 派发:sj.a(ChannelHandlerContext,Packet,ByteBuf) =
+       PacketEncoder.encode——1.20.1 混淆为 a(同类的 encode(Object,ByteBuf)
+       为泛型擦除桥,javap 实测);入口把 out 缓冲存入 channel attr
+       ("mosaic_enc_buf"),出口(唯一 RETURN,javap 实测;编码失败 ATHROW
+       出口不派发)取 out.writerIndex() = 编码后字节数(不含 prepender
+       追加的 VarInt 长度前缀)。旧挂钩 sd.doSendPacket 已移除——每包恰好
+       派发一次(防双计,见 task-1-report.md)。
+       出站 player 提取:encode 不在 Connection 方法内——经
+       ctx.channel().pipeline().get(sd.class) 取 Connection 实例
+       (configureSerialization addLast 把 sd 加入 pipeline,javap 反汇编
+       证实,不依赖 handler 名)→ 与入站同一提取路径。
+       载荷 12B = mosaic_ev_network { player_id, packet_id, size_hint }:
        player_id = sd.o(packetListener) instanceof aiy(ServerGamePacketListener
        Impl)→ aiy.b 字段(player);登录/状态/握手阶段 listener 非 aiy → 0。
        packet_id = PacketMap.OBFS 按 p.getClass().getName()(混淆全名)查表,
-       未命中 → 0(UNKNOWN)。
+       未命中 → 0(UNKNOWN)。size_hint = 真实编码/解码字节长度(不可得 → 0)。
        防递归:钩子只读字段 + 查表 + 派发,不触发任何收发包路径(派发本身
        不经网络;包路径触发的事件在钩子外)。 ---- */
-    public static void onPacketReceived(Object conn, Object packet) {
-        try { dispatchPacket(conn, packet, EV_PACKET_RECV); }
-        catch (Throwable t) { logErr("onPacketReceived", t); }
+
+    /* si.decode 入口:记录帧字节数到 channel attr(packet_size) */
+    public static void onPacketDecodeStart(Object ctx, Object buf) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            Object attr = channelAttr(ctx, ATTR_SIZE_KEY);
+            if (attr != null) M_ATTR_SET.invoke(attr, (Integer) M_BUF_READABLE.invoke(buf));
+        } catch (Throwable t) { logErr("onPacketDecodeStart", t); }
     }
 
-    public static void onPacketSent(Object conn, Object packet) {
-        try { dispatchPacket(conn, packet, EV_PACKET_SENT); }
-        catch (Throwable t) { logErr("onPacketSent", t); }
+    /* sd.channelRead0 入口:取 decode 记录的包大小(派发后清除)→ 派发 */
+    public static void onPacketReceived(Object conn, Object ctx, Object packet) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            int size = 0;
+            try {
+                Object attr = channelAttr(ctx, ATTR_SIZE_KEY);
+                if (attr != null) {
+                    Object v = M_ATTR_GET.invoke(attr);
+                    if (v != null) size = (Integer) v;
+                    M_ATTR_SET.invoke(attr, 0);   /* 派发后清除(防陈旧值) */
+                }
+            } catch (Throwable t) { /* attr 读取失败 → size=0 */ }
+            dispatchPacket(conn, packet, EV_PACKET_RECV, size);
+        } catch (Throwable t) { logErr("onPacketReceived", t); }
     }
 
-    private static void dispatchPacket(Object conn, Object packet, int idx) {
+    /* sj.a(encode)入口:out 缓冲存入 channel attr(enc_buf),出口取长度 */
+    public static void onPacketEncodeStart(Object ctx, Object packet, Object out) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            Object attr = channelAttr(ctx, ATTR_ENC_KEY);
+            if (attr != null) M_ATTR_SET.invoke(attr, out);
+        } catch (Throwable t) { logErr("onPacketEncodeStart", t); }
+    }
+
+    /* sj.a(encode)出口(每个 RETURN):out.writerIndex() = 编码后字节数;
+       player 经 pipeline 取 Connection(sd) 实例提取(见上) */
+    public static void onPacketSent(Object ctx, Object packet) {
+        try {
+            if (rt == 0) return;
+            resolve();
+            if (!reflected) return;
+            int size = 0;
+            try {
+                Object attr = channelAttr(ctx, ATTR_ENC_KEY);
+                if (attr != null) {
+                    Object out = M_ATTR_GET.invoke(attr);
+                    M_ATTR_SET.invoke(attr, (Object) null);   /* 清除 */
+                    if (out != null) size = (Integer) M_BUF_WRITER.invoke(out);
+                }
+            } catch (Throwable t) { /* attr/长度提取失败 → size=0 */ }
+            Object conn = null;
+            try {
+                Object pipe = M_CHANNEL_PIPE.invoke(M_CTX_CHANNEL.invoke(ctx));
+                if (pipe != null) conn = M_PIPE_GET.invoke(pipe, C_CONN);
+            } catch (Throwable t) { /* pipeline 提取失败 → conn=null(非游戏阶段) */ }
+            dispatchPacket(conn, packet, EV_PACKET_SENT, size);
+        } catch (Throwable t) { logErr("onPacketSent", t); }
+    }
+
+    /* ctx → channel 的 attr(指定 AttributeKey) */
+    private static Object channelAttr(Object ctx, Object key) throws Exception {
+        Object ch = M_CTX_CHANNEL.invoke(ctx);
+        if (ch == null) return null;
+        return M_ATTR.invoke(ch, key);
+    }
+
+    private static void dispatchPacket(Object conn, Object packet, int idx, int size) {
         if (rt == 0) return;
         resolve();
         if (!reflected) return;
         int playerId = 0;
-        try {
-            Object listener = F_PACKET_LISTENER.get(conn);
-            if (listener != null && C_AIY.isInstance(listener)) {
-                Object player = F_AIY_PLAYER.get(listener);   /* aiy.b */
-                if (player != null) playerId = (Integer) M_ID.invoke(player);
-            }
-        } catch (Throwable t) { /* listener/player 提取失败 → player_id=0 */ }
+        if (conn != null) {
+            try {
+                Object listener = F_PACKET_LISTENER.get(conn);
+                if (listener != null && C_AIY.isInstance(listener)) {
+                    Object player = F_AIY_PLAYER.get(listener);   /* aiy.b */
+                    if (player != null) playerId = (Integer) M_ID.invoke(player);
+                }
+            } catch (Throwable t) { /* listener/player 提取失败 → player_id=0 */ }
+        }
         int packetId = 0;
         try {
             Integer id = PacketMap.OBFS.get(packet.getClass().getName());
@@ -541,7 +694,7 @@ public final class MosaicHooks {
         byte[] b = new byte[12];
         putIntLE(b, 0, playerId);
         putIntLE(b, 4, packetId);
-        putIntLE(b, 8, 0);   /* size_hint:v1 恒 0(钩子点无包字节数,见 events.h) */
+        putIntLE(b, 8, size);   /* size_hint:真实编码/解码字节长度(不可得 → 0) */
         dispatch(idx, b);
     }
 

@@ -17,10 +17,14 @@ import org.objectweb.asm.*;
 public class InjectCheck {
     public static void main(String[] args) throws Exception {
         String jarPath = args[0];
-        /* 期望注入点 = MosaicTransformer.SPECS 全量(9 类 12 方法;M9 补齐
+        /* 期望注入点 = MosaicTransformer.SPECS 全量(10 类 13 方法;M9 补齐
            aih→onBlockBreak 与 MinecraftServer→onServerTick 两个既有点;
            Task 5 5.4:cds 改返回值出口钩子 onBlockPlaceResult;
-           Task 6:sd(Connection)→ onPacketReceived/onPacketSent 双向挂钩)。
+           Task 6:sd(Connection)→ onPacketReceived 入站挂钩;
+           Task 1:挂钩点迁移——出站从 sd.doSendPacket 迁到
+           sj(PacketEncoder).a encode 入口+出口(onPacketEncodeStart +
+           onPacketSent),入站大小取 si(PacketDecoder).decode 入口
+           (onPacketDecodeStart),channelRead0 保留类型提取(签名加 ctx)。
            类名 = jar 内条目名:混淆类直接是混淆名,MinecraftServer 未混淆。 */
         String[][] expect = {
             {"dt",  "onCommand", "onChatCommand"},
@@ -30,7 +34,9 @@ public class InjectCheck {
             {"cds", "onBlockPlaceResult"},
             {"alk", "onPlayerJoin", "onPlayerLeave"},
             {"aih", "onBlockBreak"},
-            {"sd",  "onPacketReceived", "onPacketSent"},
+            {"sd",  "onPacketReceived"},
+            {"si",  "onPacketDecodeStart"},
+            {"sj",  "onPacketEncodeStart", "onPacketSent"},
             {"net/minecraft/server/MinecraftServer", "onServerTick"},
         };
         JarFile jar = new JarFile(jarPath);
