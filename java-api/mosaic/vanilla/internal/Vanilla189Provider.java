@@ -423,12 +423,15 @@ public final class Vanilla189Provider implements MosaicProvider {
     /** 注册写路径(1.8.9 适配:注册名 → 注册表,Block.blockRegistry / Item.itemRegistry
      *  数字 ID 映射)。注册目标 = 该类型的规范注册表(与句柄包装的注册表对象无关——
      *  registerBlock/registerItem 各自锚定类型的注册表)。流程:名字/对象校验 →
-     *  重复守卫(containsKey——1.8.9 RegistrySimple.putObject 对重名仅 debug 日志
-     *  覆盖不抛错,守卫先拦截,与 M7-B 命令重名守卫同款)→ 数字 id 分配(注册表
-     *  无自动分配 API,id 由 Provider 取首个空闲 id)→ RegistryNamespaced.register
-     *  (id, rl, value)。逆向核实:RegistryNamespaced.java:18-22 / ObjectIntIdentityMap
-     *  .java(put/get/getByValue);defaulted 注册表 getObjectById(未注册 id) 返回
-     *  默认值(air),空闲判定经 getId 回环校验(与 name(id) 回环同款,两形态统一)。 */
+     *  重复名守卫(containsKey——1.8.9 RegistrySimple.putObject 对重名仅 debug 日志
+     *  覆盖不抛错,守卫先拦截,与 M7-B 命令重名守卫同款)→ 重复值守卫(getIDForObject
+     *  (对象) != -1 → 抛,先于 vanilla 调用,防 ObjectIntIdentityMap 静默改写值→id,
+     *  与 26.2 MappedRegistry 重复值抛错语义对齐)→ 数字 id 分配(注册表无自动分配
+     *  API,id 由 Provider 取首个空闲 id)→ RegistryNamespaced.register(id, rl, value)。
+     *  逆向核实:RegistryNamespaced.java:18-22 / ObjectIntIdentityMap.java(put/get/
+     *  getByValue,put 对重复值静默覆盖 identityMap);defaulted 注册表 getObjectById
+     *  (未注册 id) 返回默认值(air),空闲判定经 getId 回环校验(与 name(id) 回环同款,
+     *  两形态统一)。 */
     private MosaicRegistryEntry registerEntry(String regFieldKey, String what, String registryName, Object vanilla) {
         if (registryName == null || registryName.isEmpty())
             throw new MosaicApiException(what + " registry name must be non-empty");
@@ -439,6 +442,20 @@ public final class Vanilla189Provider implements MosaicProvider {
             if (rl == null) throw new MosaicApiException("invalid registry name: " + registryName);
             if (ReflectUtil.call(reg, m("registry.containskey"), rl) instanceof Boolean b && b)
                 throw new MosaicApiException(what + " already registered: " + registryName);
+            // 值守卫(重复值静默覆盖修复,与 26.2 对齐):1.8.9 register 对"已注册对象换
+            // 新名"无守卫——ObjectIntIdentityMap.put 先静默改写值→id(identityMap.put,
+            // 无校验),Guava HashBiMap.put 随后抛 IllegalArgumentException("value already
+            // present")被吸收——注册调用虽抛错,旧条目 id 已被改写(id("minecraft:stone")
+            // 1→N,真实 jar 实测);26.2 MappedRegistry 对重复值抛 IllegalStateException
+            // (Provider 吸收)。此守卫先于 vanilla 调用检测(getIDForObject(对象) != -1),
+            // 抛 MosaicApiException(消息含 id 与两个注册名,同 M7-B 命令重名守卫先拦截
+            // 模式)且注册表零污染。
+            int existingId = intOf(ReflectUtil.call(reg, m("registry.id"), vanilla));
+            if (existingId != -1) {
+                String existingName = registryNameVia(reg, what + ".registryname", vanilla);
+                throw new MosaicApiException(what + " value already registered as '" + existingName
+                        + "' (id " + existingId + "); cannot register as '" + registryName + "'");
+            }
             int id = nextFreeId(reg);
             ReflectUtil.call(reg, m("registry.register"), id, rl, vanilla);
             return entryOf(reg, registryName);

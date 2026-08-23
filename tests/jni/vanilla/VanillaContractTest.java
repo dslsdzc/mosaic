@@ -115,6 +115,25 @@ public class VanillaContractTest {
         check(reg.id("minecraft:diamond") == -1,
                 "registerItem did not pollute block registry (diamond stays unresolvable)");
 
+        // ---- Task 3.2:重复值注册(新名 + 已注册对象)→ MosaicApiException + 注册表零污染 ----
+        // 1.8.9 修前实测(真实 MCP jar):register 对"已注册对象换新名"无守卫——
+        // ObjectIntIdentityMap.put 先静默改写值→id(identityMap.put),Guava HashBiMap.put
+        // 随后抛 IllegalArgumentException("value already present")被 Provider 吸收为
+        // MosaicApiException——注册调用虽抛错,stone 的 id 已被改写(id("minecraft:stone")
+        // 1→N),数字 id 静默损坏;修后:Provider 值守卫先于 vanilla 调用(getIDForObject
+        // (对象) != -1 → 抛,消息含 id 与两个注册名),注册表零污染。26.2 侧 frozen
+        // 注册表任何 register 均抛(恒绿)——本用例的判别力在 1.8.9 可写注册表。
+        int stoneIdBefore = reg.id("minecraft:stone");
+        boolean dupValueBlockThrew = false;
+        try { reg.registerBlock("minecraft:mosaic_dup_value_probe", blockObj); }
+        catch (MosaicApiException ex) { dupValueBlockThrew = true; }
+        check(dupValueBlockThrew, "duplicate-value registerBlock throws MosaicApiException");
+        check(reg.id("minecraft:stone") == stoneIdBefore,
+                "duplicate-value registerBlock leaves existing id intact (stone "
+                        + stoneIdBefore + " -> " + reg.id("minecraft:stone") + ")");
+        check(reg.id("minecraft:mosaic_dup_value_probe") == -1,
+                "duplicate-value registerBlock leaves new name unregistered");
+
         // NBT:缺失键 getString → 空串(接口契约,26.2 Optional.empty 解包)
         check(c.getString("missing").equals(""),
                 "nbt missing key -> empty string (got '" + c.getString("missing") + "')");
@@ -126,20 +145,39 @@ public class VanillaContractTest {
         check(world.gameTime() == 0, "world gameTime 0 (got " + world.gameTime() + ")");
 
         // ---- M8-A:World 写路径 setBlock(错误路径;契约环境无真实 Level) ----
-        // 双代一致:token 句柄(26.2 Level.OVERWORLD 令牌 / 1.8.9 dimensionId 令牌)与
-        // null 句柄上的 setBlock 均抛 MosaicHandleException(句柄持原版 Level 引用,
-        // 无效/缺失时抛——写路径不静默,与读路径 getBlock 的 null 语义区分);
+        // 异常来源断言(来源歧义消除,Task 3.3):异常类型 + 消息前缀双断,区分两种语义——
+        // (a) token 句柄(26.2 Level.OVERWORLD 令牌 / 1.8.9 dimensionId 令牌)上的
+        //     setBlock:vanilla 调用因令牌对象无 setBlock 方法而不可达(双代实测消息前缀
+        //     "setBlock: java.lang.NoSuchMethodException");若实现错误地把坏参数(如非
+        //     BlockState)传进 vanilla,异常为 "setBlock: java.lang.IllegalArgumentException:"
+        //     ——前缀断言使此类实现错误无法被"抛了异常就过"掩盖;
+        // (b) null 句柄:w == null 守卫先行,消息前缀 "setBlock: world handle has no live"
+        //     (双代共同前缀,26.2 后缀 Level / 1.8.9 后缀 World)。
         // 真实路径(Level.setBlock / World.setBlockState,flags=3)待运行中服务端环境。
         boolean setBlockThrew = false;
+        String setBlockMsg = "";
         try { world.setBlock(MosaicBlockPos.of(0, 64, 0), block.state()); }
-        catch (MosaicHandleException ex) { setBlockThrew = true; }
+        catch (MosaicHandleException ex) {
+            setBlockThrew = true;
+            setBlockMsg = ex.getMessage() == null ? "" : ex.getMessage();
+        }
         check(setBlockThrew, "setBlock on token world handle throws MosaicHandleException");
+        check(setBlockMsg.startsWith("setBlock: java.lang.NoSuchMethodException"),
+                "setBlock token exception is vanilla-call-unreachable, not argument-illegal (got '"
+                        + setBlockMsg + "')");
         MosaicWorld worldNull = p.worldOf(null);
         check(worldNull != null, "worldOf(null) null-safe handle");
         boolean setBlockNullThrew = false;
+        String setBlockNullMsg = "";
         try { worldNull.setBlock(MosaicBlockPos.of(0, 64, 0), block.state()); }
-        catch (MosaicHandleException ex) { setBlockNullThrew = true; }
+        catch (MosaicHandleException ex) {
+            setBlockNullThrew = true;
+            setBlockNullMsg = ex.getMessage() == null ? "" : ex.getMessage();
+        }
         check(setBlockNullThrew, "setBlock on null world handle throws MosaicHandleException");
+        check(setBlockNullMsg.startsWith("setBlock: world handle has no live"),
+                "setBlock null exception is handle-invalid, not vanilla-layer (got '"
+                        + setBlockNullMsg + "')");
 
         // Entity/Player(环境限制):两者需真实 Level 才能构造,契约环境不可构造——
         // null 语义断言 + 真实路径待服务端环境(延续 world 的 null-safe 句柄先例)。
