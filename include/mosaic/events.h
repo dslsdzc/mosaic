@@ -33,7 +33,8 @@ typedef struct { u32 player_id; u32 packet_id; u32 size_hint; } mosaic_ev_networ
 typedef struct { u32 entity_id; u32 entity_type; u32 x, y, z;
                  u32 dimension; u32 source; } mosaic_ev_entity;
   /* 实体域:生成/死亡/受伤/交互/刻(尾部 dimension = FNV-1a-32(维度 location
-     串)、source = 生成来源——append-only 扩展,既有字段不动) */
+     串)、source = 生成来源——append-only 扩展,既有字段不动;1.20.1 实现恒填 0
+     (addFreshEntity 入口钩子点不可得生成来源,见 MosaicHooks 注释)) */
 
 typedef struct { u32 tick_no; } mosaic_ev_tick;       /* 世界周期:刻/保存/加载/昼夜/天气 */
 

@@ -96,8 +96,10 @@ struct mosaic_runtime {
   struct pack_view *tx_packs;
   size_t n_tx_packs;
   u32 last_err;
-  /* M9:每事件派发超时预算(us;0 = 不限制,默认 0)。只读于派发循环(入口快照,
-     单线程前提——setter 与派发同一线程,与 add_pack 同纪律)。 */
+  /* M9:每事件派发超时预算(us;0 = 不限制,默认 0)。只读于派发循环(入口快照)。
+     setter(mosaic_runtime_set_dispatch_timeout)实际由 agent premain 线程在
+     Bridge.setDispatchTimeout 时调用——先于任何派发,与派发无并发窗口;运行期
+     若再 set,入口快照 + 单线程派发前提(服务端线程)同样适用。 */
   u64 dispatch_budget_us;
 };
 

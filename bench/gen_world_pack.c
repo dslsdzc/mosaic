@@ -15,7 +15,7 @@
  *
  * [world2] 模式(M4-3:世界内动态加载验证 pack):模块 2 × 6 函数
  * (tick × 3、player_join × 3,全部 code_off 0 计数 state),事件表与
- * world.pack 完全一致(10 事件同名同序)→ 挂载校验通过;模块 id 2 不与
+ * world.pack 完全一致(12 事件同名同序)→ 挂载校验通过;模块 id 2 不与
  * world.pack 的模块 1 重叠 → 安装后下个 tick 即派发(world2 的 tick 订阅者
  * 随 tick 执行,/mosaic status 的 tick executed 增长速率翻倍可见)。
  *
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
 
   mosaic_pack_builder_add_module(b, 1, 1, "world_mod", argv[2]);
 
-  /* 10 个事件各注册一次(注册序 0..9;builder 内部按名排序重映射触发器) */
+  /* 12 个事件各注册一次(builder 内部按名排序重映射触发器) */
   for (u32 ev = 0; ev < N_EV; ev++)
     mosaic_pack_builder_add_event(b, ev_names[ev]);
 

@@ -123,6 +123,11 @@ public final class MosaicHooks {
     private static final int[] EV_IDS = new int[EVENTS.length];
     private static final long[] EV_EXEC = new long[EVENTS.length];   /* dispatch 返回执行数累积 */
     private static final long[] EV_CALLS = new long[EVENTS.length];  /* 派发调用次数 */
+    /* 派发处下标常量:init 时按事件名解析(未注册 → -1),不硬编码 EVENTS 数组
+       位置——避免事件名与下标耦合漂移(F-9:dispatch(9/10/11,...) 魔数消除) */
+    private static int EV_PLAYER_CMD = -1;
+    private static int EV_PACKET_RECV = -1;
+    private static int EV_PACKET_SENT = -1;
 
     /* ---- 1.20.1 混淆名反射句柄(premain 阶段服务端类尚未加载,
        故惰性解析:首次 hook 调用时解析,失败自动重试——首 tick 必然成功) ---- */
@@ -177,6 +182,16 @@ public final class MosaicHooks {
         Bridge.setDispatchTimeout(rt, 200_000);
         for (int i = 0; i < EVENTS.length; i++)
             EV_IDS[i] = Bridge.eventId(rt, EVENTS[i]);
+        EV_PLAYER_CMD = eventIndex("player_command");
+        EV_PACKET_RECV = eventIndex("packet_received");
+        EV_PACKET_SENT = eventIndex("packet_sent");
+    }
+
+    /* 事件名 → EVENTS 数组下标(未注册/未找到 → -1) */
+    private static int eventIndex(String name) {
+        for (int i = 0; i < EVENTS.length; i++)
+            if (EVENTS[i].equals(name)) return i;
+        return -1;
     }
 
     /* 服务端类由 bundler 自建类加载器定义——Class.forName 必须带该加载器
@@ -310,21 +325,29 @@ public final class MosaicHooks {
     /* ---- 注入 hook:游戏内聊天命令(M8-D;dt.a(ParseResults,String) =
        performCommand(ParseResults,String) 入口;signature 无 CommandSourceStack
        参数,从 ParseResults.getContext()(= CommandContextBuilder,javap 实测)
-       .getSource() 反射提取;提取值存入 chatSource(5.5 反馈通道,静态
-       accessor 暴露给 Java 处理方)。
+       .getSource() 反射提取;提取值经局部变量直传 dispatchPlayerCommand
+       (不再经共享静态字段往返——见下方 source 注释),同时存入 chatSource
+       (5.5 反馈通道,静态 accessor 暴露给 Java 处理方)。
        Task 5 5.3:非 /mosaic 命令 → 派发 player_command(player_id +
        FNV-1a-32(命令文本去前导 '/'))——chat 命令漏斗) ---- */
     public static boolean onChatCommand(Object results, String cmd) {
         try {
-            /* 提取 source(失败不阻断:/mosaic 处理不依赖 source) */
+            /* 提取 source(失败不阻断:/mosaic 处理不依赖 source)。提取失败 →
+               本地变量保持 null 直传 dispatchPlayerCommand——不写共享字段,
+               避免"保留上一个命令的 source"与多连接并发竞态(F-1;chatSource
+               字段仅剩 5.5 反馈通道用途) */
+            Object source = null;
             if (results != null && M_PARSE_CTX != null && M_CTX_SRC != null) {
                 try {
                     Object ctx = M_PARSE_CTX.invoke(results);
-                    if (ctx != null) chatSource = M_CTX_SRC.invoke(ctx);
+                    if (ctx != null) {
+                        source = M_CTX_SRC.invoke(ctx);
+                        chatSource = source;   /* 反馈通道(仅观测/回复用) */
+                    }
                 } catch (Throwable t) { /* 提取失败按 null 处理 */ }
             }
             if (handleCommand(cmd)) return true;
-            if (rt != 0 && reflected) dispatchPlayerCommand(cmd);
+            if (rt != 0 && reflected) dispatchPlayerCommand(cmd, source);
             return false;
         } catch (Throwable t) {
             logErr("onChatCommand", t);
@@ -335,14 +358,16 @@ public final class MosaicHooks {
     /* 5.3:player_command 派发(chat 命令漏斗内非 /mosaic 命令)。
        载荷 8B = mosaic_ev_player_command { player_id; cmd_hash }:
        player_id 取 CommandSourceStack.getPlayer()(ds.i())的实体 id,非玩家
-       source → 0;cmd_hash = FNV-1a-32(命令文本去前导 '/')。 */
-    private static void dispatchPlayerCommand(String cmd) {
+       source → 0;cmd_hash = FNV-1a-32(命令文本去前导 '/')。
+       source 由 onChatCommand 提取并传参(提取失败 → null;不再经共享静态
+       字段往返——单线程下避免陈旧值、多连接下避免竞态)。 */
+    private static void dispatchPlayerCommand(String cmd, Object source) {
         try {
-            if (EV_IDS[9] < 0) return;          /* 事件未注册 → 跳过 */
+            if (EV_IDS[EV_PLAYER_CMD] < 0) return;      /* 事件未注册 → 跳过 */
             int playerId = 0;
-            if (chatSource != null && M_SRC_PLAYER != null) {
+            if (source != null && M_SRC_PLAYER != null) {
                 try {
-                    Object p = M_SRC_PLAYER.invoke(chatSource);
+                    Object p = M_SRC_PLAYER.invoke(source);
                     if (p != null) playerId = (Integer) M_ID.invoke(p);
                 } catch (Throwable t) { /* player 提取失败 → 0 */ }
             }
@@ -350,7 +375,7 @@ public final class MosaicHooks {
             byte[] b = new byte[8];
             putIntLE(b, 0, playerId);
             putIntLE(b, 4, fnv1a32(body));
-            dispatch(9, b);
+            dispatch(EV_PLAYER_CMD, b);
         } catch (Throwable t) { logErr("dispatchPlayerCommand", t); }
     }
 
@@ -487,12 +512,12 @@ public final class MosaicHooks {
        防递归:钩子只读字段 + 查表 + 派发,不触发任何收发包路径(派发本身
        不经网络;包路径触发的事件在钩子外)。 ---- */
     public static void onPacketReceived(Object conn, Object packet) {
-        try { dispatchPacket(conn, packet, 10); }
+        try { dispatchPacket(conn, packet, EV_PACKET_RECV); }
         catch (Throwable t) { logErr("onPacketReceived", t); }
     }
 
     public static void onPacketSent(Object conn, Object packet) {
-        try { dispatchPacket(conn, packet, 11); }
+        try { dispatchPacket(conn, packet, EV_PACKET_SENT); }
         catch (Throwable t) { logErr("onPacketSent", t); }
     }
 
@@ -660,9 +685,10 @@ public final class MosaicHooks {
         warnIfTimeout(idx);
     }
 
-    /* 超时告警(仅日志):每事件每次超时至多一条,且节流 5s——慢订阅者常驻
-       时不刷屏;语义:该事件预算内未完成,剩余订阅者被跳过(正在执行的函数
-       不受影响,不能被中断)。 */
+    /* 超时告警(仅日志):节流 5s 是全局的(单一时间戳,任一事件超时告警后
+       5s 内不再重复——并非每事件各自节流);慢订阅者常驻时不刷屏。语义:该
+       事件预算内未完成,剩余订阅者被跳过(正在执行的函数不受影响,不能被
+       中断)。 */
     private static long lastTimeoutWarn = 0;
     private static void warnIfTimeout(int idx) {
         if (Bridge.lastError(rt) != MOSAIC_ERR_TIMEOUT) return;

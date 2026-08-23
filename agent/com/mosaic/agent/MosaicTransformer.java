@@ -242,6 +242,7 @@ public final class MosaicTransformer implements ClassFileTransformer {
                     }
                 }
             };
+            final int[] retvalMaxLocals = { -1 };   /* F-16:RETVAL 原方法 max_locals 捕获 */
             ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
                 @Override
                 public MethodVisitor visitMethod(int access, String name, String desc,
@@ -250,11 +251,23 @@ public final class MosaicTransformer implements ClassFileTransformer {
                     Spec spec = SPECS.get(className + ":" + name + ":" + desc);
                     if (spec == null || mv == null) return mv;
                     changed[0] = true;
-                    return new InjectingMethodVisitor(mv, spec);
+                    return new InjectingMethodVisitor(mv, spec, retvalMaxLocals);
                 }
             };
             new ClassReader(classfileBuffer).accept(cv, 0);
             if (!changed[0]) return null;
+            /* F-16:RETVAL 注入依赖新局部槽 3/4 空闲(入口把入参 ctx/state 存入
+               槽 3/4)——原方法 max_locals 必须 == 3(当前 cds.a 实测 3)。若未来
+               重混淆使该方法占用槽 3/4,继续注入会静默覆盖其局部变量(错值不可
+               察觉):此处校验失败 → 返回 null 原样加载(注入跳过),InjectCheck
+               的 ALL INJECTED 门禁随之 MISS 大声失败,而非静默错值。 */
+            if (retvalMaxLocals[0] != -1 && retvalMaxLocals[0] != 3) {
+                System.out.println("Mosaic agent: WARN " + className
+                        + " RETVAL 原方法 max_locals=" + retvalMaxLocals[0]
+                        + " != 3(注入需局部槽 3/4 空闲)——类原样加载,注入跳过"
+                        + "(InjectCheck 将 MISS,防静默错值)");
+                return null;
+            }
             if (transformed.add(className)) {
                 System.out.println("Mosaic agent: transformed " + className
                         + " (" + display + ")");
@@ -281,10 +294,20 @@ public final class MosaicTransformer implements ClassFileTransformer {
     private static final class InjectingMethodVisitor extends MethodVisitor {
 
         private final Spec spec;
+        /* F-16:RETVAL 原方法 max_locals 捕获(visitMaxs 收到的是类文件原始值,
+           COMPUTE_MAXS 只影响 writer 侧计算,不改写本访问器收到的入参) */
+        private final int[] retvalMaxLocals;
 
-        InjectingMethodVisitor(MethodVisitor mv, Spec spec) {
+        InjectingMethodVisitor(MethodVisitor mv, Spec spec, int[] retvalMaxLocals) {
             super(Opcodes.ASM9, mv);
             this.spec = spec;
+            this.retvalMaxLocals = retvalMaxLocals;
+        }
+
+        @Override
+        public void visitMaxs(int maxStack, int maxLocals) {
+            if (spec.kind == Kind.RETVAL) retvalMaxLocals[0] = maxLocals;
+            super.visitMaxs(maxStack, maxLocals);
         }
 
         @Override

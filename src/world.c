@@ -363,11 +363,11 @@ static const world_freq_fix g_freq_fixes[] = {
 /* 1.5 门禁访问器(契约测试用):覆盖表条目数与条目名(与 g_freq_fixes 同序)
    ——tests/test_world.c 遍历目录 HIGH 事件断言全部被覆盖表收录或显式排除
    (装饰性地雷:目录新增 HIGH 事件若不在覆盖表,合成世界静默不派发它)。 */
-u32 world_gen_table_count(void) {
+u32 mosaic_world_gen_table_count(void) {
   return (u32)(sizeof g_freq_fixes / sizeof g_freq_fixes[0]);
 }
-const char *world_gen_table_name(u32 i) {
-  if (i >= world_gen_table_count()) return NULL;
+const char *mosaic_world_gen_table_name(u32 i) {
+  if (i >= mosaic_world_gen_table_count()) return NULL;
   return g_freq_fixes[i].name;
 }
 

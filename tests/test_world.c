@@ -398,7 +398,9 @@ static void test_high_tier_gate(void) {
        - inventory_change:合成世界无背包模型;
        - packet_received/packet_sent(Task 6 网络域):合成世界无网络协议流
          (真实触发经 agent Connection 挂钩,见 MosaicHooks);
-         /命令前处理——合成世界不模拟玩家输入流。 */
+       - player_*(command_preprocess/interact/interact_at_entity/inventory_click/
+         move/swing_arm):合成世界不模拟玩家输入流(玩家输入需客户端输入流,
+         合成世界无玩家输入模型;聊天经 player_chat 已入 MID 档)。 */
     "block_burn", "block_from_to", "block_ignite", "block_interact",
     "block_moisture_change", "block_physics", "block_redstone", "block_spread",
     "block_tick",
@@ -418,12 +420,14 @@ static void test_high_tier_gate(void) {
     const mosaic_ev_spec *s = &mosaic_events_catalog[i];
     if (s->freq != MOSAIC_EV_FREQ_HIGH) continue;
     int covered = 0;
-    for (u32 k = 0; k < world_gen_table_count(); k++)
-      if (strcmp(s->name, world_gen_table_name(k)) == 0) { covered = 1; break; }
+    for (u32 k = 0; k < mosaic_world_gen_table_count(); k++)
+      if (strcmp(s->name, mosaic_world_gen_table_name(k)) == 0) { covered = 1; break; }
     if (covered) continue;
     int excluded = 0;
     for (size_t k = 0; k < sizeof EXCLUDED_HIGH / sizeof EXCLUDED_HIGH[0]; k++)
       if (strcmp(s->name, EXCLUDED_HIGH[k]) == 0) { excluded = 1; break; }
+    if (!excluded)   /* 失败前打印事件名,门禁失败可直接定位(F-4) */
+      fprintf(stderr, "HIGH event not covered/excluded: %s\n", s->name);
     MT_CHECK(excluded);   /* 目录 HIGH 事件必须入表或显式排除 */
   }
   /* 排除清单条目必须真实存在于目录且为 HIGH(防拼写错误使门禁空转) */

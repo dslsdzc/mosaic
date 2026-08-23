@@ -25,7 +25,8 @@ u32 mosaic_event_dispatch(mosaic_runtime *rt, u32 event_id, const void *event) {
   if (!rt) return 0;
   rt->dispatch_depth++;
   u32 executed = 0;
-  /* M9:超时预算——入口快照(单线程前提,setter 与派发同线程)。仅 budget != 0
+  /* M9:超时预算——入口快照(setter 由 agent premain 线程于首次派发前设置,
+     与派发无并发窗口;运行期再 set 亦在派发外,单线程前提适用)。仅 budget != 0
      才取时钟 + 入口清 last_err(预算生效时每次派发后 last_error 反映本次派发
      结果,避免陈旧 TIMEOUT 被 agent 告警误报);预算 0 时零开销:不取时钟、
      不触碰 last_err(与既有行为完全一致)。 */

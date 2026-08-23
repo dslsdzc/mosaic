@@ -273,6 +273,13 @@ public class VanillaContractTest {
         }
         MosaicNetwork netReal = p.networkOf(netObj);
         check(netReal != null, "networkOf real-path handle");
+        // F-2:真实路径必须被行使——构造失败时 Provider 静默回退 null-safe 句柄
+        // (NullSafeNetwork.packetOf 委托同一 packetOf0,"真实路径"声明未被测试
+        // 行使)。断言句柄类为真实路径类型:26.2 ConnectionNetwork /
+        // 1.8.9 NetHandlerNetwork(Provider 内部类,getSimpleName 即短名)。
+        String netRealCls = netReal.getClass().getSimpleName();
+        check("ConnectionNetwork".equals(netRealCls) || "NetHandlerNetwork".equals(netRealCls),
+                "networkOf real-path class (got " + netRealCls + ")");
 
         String[][] commonPackets = {
                 { "keepalive_in",    "0x0111" },   /* ServerboundKeepAlivePacket       ↔ C00PacketKeepAlive */

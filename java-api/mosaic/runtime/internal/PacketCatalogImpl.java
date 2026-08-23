@@ -55,6 +55,9 @@ public final class PacketCatalogImpl {
 
     private static final java.util.Set<String> LOGIN_IN = java.util.Set.of(
             "ServerboundCustomQueryPacket", "ServerboundHelloPacket",
+            /* 前瞻(1.20.2+):ServerboundLoginAcknowledgedPacket 为 1.20.2 新增
+               (1.20.2 登录序列拆分),不在 1.20.1 目录/服务端——保留占位以便
+               未来版本,1.20.1 环境下不会匹配任何实际包。 */
             "ServerboundLoginAcknowledgedPacket", "ServerboundKeyPacket");
     private static final java.util.Set<String> LOGIN_OUT = java.util.Set.of(
             "ClientboundCustomQueryPacket", "ClientboundGameProfilePacket",

@@ -28,8 +28,21 @@ for f in agent/mosaic/Bridge.java java/mosaic/Bridge.java; do
         exit 1
     fi
 done
-grep -Eo 'public static native[^;]*;' agent/mosaic/Bridge.java | sed 's/^[[:space:]]*//' | sort > build/bridge_agent_native.txt
-grep -Eo 'public static native[^;]*;' java/mosaic/Bridge.java | sed 's/^[[:space:]]*//' | sort > build/bridge_java_native.txt
+# 整声明提取:packCreate/packAddFn/packAddItem 三个声明的 ';' 在续行上
+# (多行声明),按行 grep 会漏掉它们(57 声明仅见 54,F-3)——改用 perl 跨
+# 行提取 "public static native" 到 ';' 的整段,段内空白归一为单空格后比对。
+extract_native_decls() {
+    perl -0777 -ne 'while (/public\s+static\s+native\s+[^;]*;/g) { my $m = $&; $m =~ s/\s+/ /g; $m =~ s/^ //; $m =~ s/ $//; print "$m\n"; }' "$1" | sort
+}
+extract_native_decls agent/mosaic/Bridge.java > build/bridge_agent_native.txt
+extract_native_decls java/mosaic/Bridge.java > build/bridge_java_native.txt
+# 提取完整性自检:提取数必须等于源码中 "public static native" 出现次数
+# (防未来再出现异形声明使提取漏检而门禁不自知)
+if [ "$(wc -l < build/bridge_agent_native.txt)" -ne "$(grep -c 'public static native' agent/mosaic/Bridge.java)" ] \
+   || [ "$(wc -l < build/bridge_java_native.txt)" -ne "$(grep -c 'public static native' java/mosaic/Bridge.java)" ]; then
+    echo "[agent] ERROR: native 声明提取不完整 (agent $(wc -l < build/bridge_agent_native.txt)/$(grep -c 'public static native' agent/mosaic/Bridge.java), java $(wc -l < build/bridge_java_native.txt)/$(grep -c 'public static native' java/mosaic/Bridge.java))" >&2
+    exit 1
+fi
 if ! diff -q build/bridge_agent_native.txt build/bridge_java_native.txt >/dev/null; then
     echo "[agent] ERROR: Bridge native 声明不一致 (agent/mosaic/Bridge.java vs java/mosaic/Bridge.java):" >&2
     diff build/bridge_agent_native.txt build/bridge_java_native.txt >&2 || true

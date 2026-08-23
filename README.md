@@ -40,7 +40,7 @@ bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 21)
 | S-W1 世界生命周期 | 加入→物化→墓碑→重进恢复 | 58.7 μs | ≤ 500 μs |
 | S-W2b 稀疏工作集 | 2% 高频订阅下 ws/总数 | 0.281 | ≪ 1 |
 
-测试:16 个 C 套件(单元/属性/事务/线程/描述符/世界)+ JNI 23 断言 + 真实 1.20.1 服务端端到端;ASan/UBSan/TSan 干净。
+测试:17 个 C 套件(单元/属性/事务/线程/描述符/世界/网络包)+ JNI 23 断言 + 真实 1.20.1 服务端端到端;ASan/UBSan/TSan 干净。
 
 ## 布局
 
@@ -110,7 +110,7 @@ bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 
 | PlayerList.remove(ServerPlayer) | `alk.c (Laig;)V` | `onPlayerLeave`(方法尾) |
 | ServerPlayerGameMode.destroyBlock(BlockPos) | `aih.a (Lgu;)Z` | `onBlockBreak`(入口,取破坏前状态) |
 | Commands.performPrefixedCommand(CommandSourceStack, String) | `dt.a (Lds;Ljava/lang/String;)I` | `onCommand`(入口,消费 `/mosaic`) |
-| Commands.performCommand(ParseResults, String)(游戏内聊天命令漏斗) | `dt.a (Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I` | `onChatCommand`(入口,消费 `/mosaic`;source 从 ParseResults 提取) |
+| Commands.performCommand(ParseResults, String)(命令执行漏斗) | `dt.a (Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)I` | `onChatCommand`(入口,消费 `/mosaic`;source 从 ParseResults 提取;控制台/RCON 命令也流经此 hook——`performPrefixedCommand` 内部调用本方法(javap 证实),player_id=0;非 `/mosaic` 命令派发 `player_command` 事件(player_id + cmd_hash)) |
 | BlockItem.placeBlock(BlockPlaceContext, BlockState) | `cds.a (Lcih;Ldcb;)Z` | `onBlockPlaceResult`(返回值出口钩子:placeBlock 返回 false 的失败放置不派发 block_place;state = 实际放置状态) |
 | ServerLevel.addFreshEntity(Entity) | `aif.b (Lbfj;)Z` | `onEntitySpawn`(入口;载荷含真实 entity_type 注册 id(经 `BuiltInRegistries.ENTITY_TYPE` = `jb.h`)与 dimension(level.dimension().location() 的 FNV-1a-32)) |
 | ServerGamePacketListenerImpl.handleChat(ServerboundChatPacket) | `aiy.a (Lzi;)V` | `onPlayerChat`(入口;player = 字段 `aiy.b`;消息文本经 `zi.a` = ServerboundChatPacket.message 提取) |
@@ -122,9 +122,13 @@ ProGuard 内联,**控制台/RCON 命令**统一漏斗 = `performPrefixedCommand`
 **游戏内聊天命令已挂钩**(M8-D):独立反汇编证实聊天命令不走
 `performPrefixedCommand` 漏斗(走 `dt.a(ParseResults,String)`,即 mojmap
 `performCommand(ParseResults,String)` 路径)——M8-D 已 hook 该点,入口
-消费 `/mosaic`。M8-D 同时新增 block_place/entity_spawn/player_chat/
-player_death 四个事件 hook(签名均经 server_mappings + javap 核实,
-记录见 `.superpowers/sdd/task-m8-d-report.md`)。)
+消费 `/mosaic`。注意 **控制台/RCON 命令也流经该 `dt.a(ParseResults,String)`
+钩子**:`performPrefixedCommand` 内部调用本方法(javap -c 证实),故控制台
+命令的非 `/mosaic` 部分同样派发 `player_command`(source 无玩家 →
+player_id=0,通道差异如实记录,见 `.superpowers/sdd/task-5-report.md`)。
+M8-D 同时新增 block_place/entity_spawn/player_chat/player_death 四个
+事件 hook(签名均经 server_mappings + javap 核实,记录见
+`.superpowers/sdd/task-m8-d-report.md`)。)
 
 关键工程点:
 
@@ -222,4 +226,8 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 - 网络包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注;sendPacket 的包编码
   与 API 监听器 → 内核事件的分发接线待服务端环境)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
+- 派发跨线程不在支持范围:agent 的 Netty IO 线程包钩子(packet_received/sent)
+  与服务器线程的 tick/命令派发并发执行,冷订阅者(未物化)并发物化存在竞态
+  窗口——单线程前提仅覆盖服务器线程;world.pack 订阅者由服务器线程首 tick
+  物化,缓解该窗口(文档如实,见 task-6-report.md)。
 - 原版能力域 API 已由 M5/M6 补齐(19 个零实现接口全部就绪:entity/block/item/registry/状态/触发/元数据等,含双代 Provider)——见 `docs/` 与 `tests/jni/vanilla/`。
