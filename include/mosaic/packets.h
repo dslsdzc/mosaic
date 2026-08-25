@@ -18,9 +18,10 @@
    ClientboundMoveEntityPacket(wl)为抽象包类,运行时收发包实体 = 内嵌
    子类($Pos/$PosRot/$Rot/$StatusOnly、$Pos/$PosRot/$Rot,混淆名 zx$a-d /
    wl$a-c)。目录以 mojmap 内嵌名(带 '$',如 "ServerboundMovePlayerPacket
-   $Pos")追加在目录尾部(追加块内按名升序;变体名 strcmp 序位在原 168 条
-   之前,故追加块破坏全局升序——全局升序纪律仅适用于原 168 条,追加块
-   独立升序,packets.c 注释注明);id = 组基 + 组内序(既有 id 不动,新 id
+   $Pos")追加在目录尾部(追加块内按名升序——按 strcmp 位插入会重编号既有
+   id,违反只增不改纪律,故只能追加;追加块破坏全局升序——全局升序纪律
+   仅适用于原 168 条,追加块独立升序,packets.c 注释注明);id = 组基 +
+   组内序(既有 id 不动,新 id
    按组续号:PLAY_IN 0x012F..0x0132、PLAY_OUT 0x026E..0x0270)。其余包类
    的内嵌类(枚举/接口/记录/数据持有类)非 Packet 子类,不入目录。
    BundleDelimiterPacket/BundlePacket 为编码器内非方向性工具类(抽象基类/
@@ -33,7 +34,8 @@
 
 typedef struct { const char *name; u32 id; } mosaic_packet_entry;
 
-/* 包目录:按名字升序(与 events.c 同一纪律)。实现见 src/packets.c */
+/* 包目录:原 168 条按名升序 + 变体追加块(块内升序;追加为保持只增不改)。
+   实现见 src/packets.c */
 extern const mosaic_packet_entry mosaic_packets_catalog[];
 extern const u32 mosaic_packets_catalog_count;
 

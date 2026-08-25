@@ -2,8 +2,8 @@
    原始 168 条按名字升序(ASCII 名:strcmp 序与 events.c 长度感知序一致);
    id 按分组连续分配(UNKNOWN=0;组基址见 packets.h 注释,组内顺序 = 目录序)。
    [LC-2] 内嵌包变体 7 条追加在目录尾部(追加块内按名升序;既有 168 条 id
-   不动,新 id 按组续号)——变体名字含 '$',strcmp 序位在原 168 条之前,故
-   只能作追加块(详见 packets.h 注释)。
+   不动,新 id 按组续号)——按 strcmp 位插入会重编号既有 id,违反只增不改
+   纪律,故只能作追加块(详见 packets.h 注释)。
    清单来源:Mojang server_mappings(server.txt,1.20.1,2026-08-23 下载,
    sha1 0b4dba049482496c507b2387a73a913230ebbd76)提取的
    net.minecraft.network.protocol.* 下全部 Serverbound 与 Clientbound 包类

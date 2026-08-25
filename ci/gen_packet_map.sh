@@ -17,6 +17,11 @@
 #      非方向性工具类)+ 内嵌包变体(外层类 ∈ VARIANT_OUTERS,见下)必须全部
 #      出现在目录中——目录漏项 → 报错。
 #   3. 生成条目数 == 目录条目数(1.20.1 = 175:168 顶层包类 + 7 内嵌变体)。
+#   4. 内嵌类总数守卫:server.txt 中 net.minecraft.network.protocol.** 下含
+#      '$' 的类行数 == 54(1.20.1 锚点)。VARIANT_OUTERS 是白名单——未来
+#      MC_VER 出现新的含 Packet 子类的外层类会被过滤静默丢弃(欠包含时反向
+#      覆盖门禁不红);总数守卫让任何内嵌类景观变化(新增/删除外层变体)
+#      大声失败。MC_VER 升级时此守卫必红——正是期望行为,人工确认后更新锚点。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -64,6 +69,15 @@ maps, catalog, out = sys.argv[1], sys.argv[2], sys.argv[3]
 # extends uo=Packet),非协议包变体——全量 javap 输出摘录见
 # .superpowers/sdd/task-2-report.md。外层集合与目录经反向覆盖门禁双向
 # 约束:单侧增删 → 报错(与 Bundle* 排除同款纪律)。
+#
+# 白名单盲区(LC-2 复审):VARIANT_OUTERS 只防目录↔过滤漂移;未来新外层
+# 类下的真实 Packet 子类不在白名单内 → 被静默丢弃(packet_id 保持 0)而
+# 反向覆盖不红。硬守卫:下方 INNER_CLASS_TOTAL 断言 protocol.** 内嵌类
+# 总数,任何内嵌类景观变化(新增/删除外层变体)大声失败——欠包含不再
+# 可能静默。此数为生成期锚点(非运行期硬编码),锚定 1.20.1;
+# MC_VER 升级时守卫必红,人工确认后更新锚点与 VARIANT_OUTERS。
+INNER_CLASS_TOTAL = 54
+inner_total = 0
 VARIANT_OUTERS = {"ServerboundMovePlayerPacket", "ClientboundMoveEntityPacket"}
 by_name = {}
 all_packets = []
@@ -72,6 +86,8 @@ for line in open(maps):
     if not m:
         continue
     fqn, obf = m.group(1), m.group(2)
+    if '$' in fqn.split('.')[-1]:
+        inner_total += 1                 # 内嵌类景观总数(白名单过滤前计数)
     if fqn.endswith('.Packet'):          # Packet 接口
         continue
     simple = fqn.split('.')[-1]
@@ -86,6 +102,16 @@ for line in open(maps):
         # 编码器内非方向性工具类,不入目录(出现即 UNKNOWN)
     all_packets.append((simple, obf))
     by_name.setdefault(simple, []).append((fqn, obf))
+
+# 内嵌类总数守卫(锚定 1.20.1,生成期锚点):总数 != 54 → 内嵌类景观变化,
+# 大声失败(见上方 VARIANT_OUTERS 盲区说明)。
+if inner_total != INNER_CLASS_TOTAL:
+    print(f'[gen_packet_map] ERROR inner-class landscape changed: '
+          f'server.txt has {inner_total} inner classes under protocol.**, '
+          f'expected {INNER_CLASS_TOTAL} (1.20.1 anchor)', file=sys.stderr)
+    print('  New/removed outer variant classes need review: update '
+          'VARIANT_OUTERS and INNER_CLASS_TOTAL after confirmation.', file=sys.stderr)
+    sys.exit(1)
 
 # packets.c 目录 (name, id)
 entries = []
