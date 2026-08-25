@@ -204,6 +204,8 @@ public final class MosaicHooks {
         void onEventDispatched(String eventName, int executed, byte[] payload);
     }
     private static final Map<Integer, List<EventListener>> LISTENERS = new java.util.HashMap<>();
+    /* 与 java-api EventImpl.MAX_BROADCAST_DEPTH 同值同语义(观测通道双
+       实现)——改一处必改另一处。 */
     private static final int MAX_LISTENER_DEPTH = 8;
     private static final ThreadLocal<Integer> LISTENER_DEPTH = ThreadLocal.withInitial(() -> 0);
 
@@ -833,7 +835,7 @@ public final class MosaicHooks {
             int n;
             synchronized (DISPATCH_LOCK) {
                 n = Bridge.eventDispatch(rt, EV_IDS[idx], b);
-                /* 计数自增同锁(与 dispatch() 一致;打印在锁外) */
+                /* 计数自增同锁(与 dispatch() 一致;打印/告警在锁外) */
                 if (n > 0) EV_EXEC[idx] += n;
                 EV_CALLS[idx]++;
             }
@@ -898,8 +900,10 @@ public final class MosaicHooks {
     }
 
     /* 派发:事件未注册(-1)→ 跳过;返回执行数累积到静态计数器。
-       M9:派发后检查超时(预算生效时 lastError 反映本次派发结果;
-       200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警)。
+       M9:派发后检查超时(锁内 eventDispatch 返回后 lastError 反映本次派发;
+       200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警;
+       warnIfTimeout 检查在锁外——并发派发下可能读到后一次派发的 lastError,
+       归属窗口理论存在,仅日志无行为影响)。
        Task 3:派发返回后广播监听器(锁外,理由见 LISTENERS 注释)。 */
     private static void dispatch(int idx, byte[] payload) {
         if (EV_IDS[idx] < 0) return;
@@ -977,7 +981,8 @@ public final class MosaicHooks {
     /* 超时告警(仅日志):节流 5s 是全局的(单一时间戳,任一事件超时告警后
        5s 内不再重复——并非每事件各自节流);慢订阅者常驻时不刷屏。语义:该
        事件预算内未完成,剩余订阅者被跳过(正在执行的函数不受影响,不能被
-       中断)。 */
+       中断)。lastError 读取在 DISPATCH_LOCK 外——并发派发下可能读到后一次
+       派发的结果(告警归属/缺失均可能,仅日志,无行为影响)。 */
     private static long lastTimeoutWarn = 0;
     private static void warnIfTimeout(int idx) {
         if (Bridge.lastError(rt) != MOSAIC_ERR_TIMEOUT) return;
@@ -990,12 +995,19 @@ public final class MosaicHooks {
     }
 
     /* 载荷十六进制(E2E 监听器证据用:大小端原样展示,与 events.h 一致)。
+       格式契约:小写、无 0x 前缀、每字节固定 2 位——E2E 门禁正则
+       (ci/run_mc_client_e2e.sh 的 [0-9a-f]{24} 等)依赖,改动须保持输出
+       逐字节不变(位运算版与 String.format("%02x") 全值域等价)。
        public:MosaicHooks 经 appendToBootstrapClassLoaderSearch 由 bootstrap
        加载器加载,包私有成员对 app 加载器(MosaicAgent)不可访问
        (IllegalAccessError,监听器 lambda 实测)——public 消除跨加载器访问。 */
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
     public static String hex(byte[] b) {
         StringBuilder sb = new StringBuilder(b.length * 2);
-        for (byte x : b) sb.append(String.format("%02x", x & 0xff));
+        for (byte x : b) {
+            int v = x & 0xff;
+            sb.append(HEX_DIGITS[v >>> 4]).append(HEX_DIGITS[v & 0xf]);
+        }
         return sb.toString();
     }
 

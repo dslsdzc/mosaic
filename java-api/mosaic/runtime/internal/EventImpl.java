@@ -26,7 +26,9 @@ public final class EventImpl implements MosaicEventDispatcher {
     private final Map<Integer, MosaicEvent> eventCache = new HashMap<>();
     /* 重入保护:监听器回调内再派发 → 同线程广播深度超限丢弃广播(嵌套派发
        照常执行),防无限循环。ThreadLocal:递归必然同线程,跨线程并发派发
-       互不影响(各自深度独立)。 */
+       互不影响(各自深度独立)。
+       与 agent 侧 MosaicHooks.MAX_LISTENER_DEPTH 同值同语义(观测通道双
+       实现)——改一处必改另一处。 */
     private static final int MAX_BROADCAST_DEPTH = 8;
     private static final ThreadLocal<Integer> BROADCAST_DEPTH =
             ThreadLocal.withInitial(() -> 0);
