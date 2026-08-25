@@ -420,15 +420,16 @@ public class VanillaContractTest {
             ls.close();
             led.dispatch(prId, pkt12);
             check(got[0] == 1, "listener close stops delivery");
-            // 重入保护:监听器内再派发同事件 → depth guard 终止(≤ 8),不无限循环
+            // 重入保护:监听器内再派发同事件 → depth guard 终止(恰 8 次广播:
+            // 深度 0→7 广播、深度 8 丢弃),不无限循环
             final int[] reent = {0};
             MosaicEventSubscription lsReent = led.addEventListener(prId, (ev, executed, payload) -> {
                 reent[0]++;
                 if (reent[0] < 1000) led.dispatch(prId, pkt12);
             });
             led.dispatch(prId, pkt12);
-            check(reent[0] > 0 && reent[0] <= 8,
-                    "reentrant listener depth-guarded (calls=" + reent[0] + ", max 8)");
+            check(reent[0] == 8,
+                    "reentrant listener depth-guarded (calls=" + reent[0] + ", == 8)");
             lsReent.close();
             // 异常隔离:抛异常的监听器不影响其余监听器与派发返回值
             final int[] isoOk = {0};

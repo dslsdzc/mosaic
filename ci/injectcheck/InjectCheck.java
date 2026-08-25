@@ -17,7 +17,7 @@ import org.objectweb.asm.*;
 public class InjectCheck {
     public static void main(String[] args) throws Exception {
         String jarPath = args[0];
-        /* 期望注入点 = MosaicTransformer.SPECS 全量(10 类 13 方法;M9 补齐
+        /* 期望注入点 = MosaicTransformer.SPECS 全量(11 类 14 方法;M9 补齐
            aih→onBlockBreak 与 MinecraftServer→onServerTick 两个既有点;
            Task 5 5.4:cds 改返回值出口钩子 onBlockPlaceResult;
            Task 6:sd(Connection)→ onPacketReceived 入站挂钩;

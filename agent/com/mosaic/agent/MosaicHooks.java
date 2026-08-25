@@ -99,7 +99,7 @@ import java.util.Map;
  *       desc (Lio/netty/channel/ChannelHandlerContext;Lio/netty/buffer/ByteBuf;
  *       Ljava/util/List;)V——分帧器(splitter)切好整包后每包恰好调用一次,
  *       入口 buf.readableBytes() = 包字节数(不含分帧器 VarInt 长度前缀;
- *       压缩开启 = 压缩后字节数 + size 前缀;javap -c 实测 decode 入口先读
+ *       压缩开启 = 解压后包体字节数(decompressor 已消费长度前缀);javap -c
  *       readableBytes 并整帧消费)
  *     net.minecraft.network.PacketEncoder -> sj(extends
  *       MessageToByteEncoder<uo<?>>)
@@ -609,7 +609,8 @@ public final class MosaicHooks {
     /* ---- 注入 hook:网络域(Task 6 + Task 1 挂钩点迁移)
        入站大小:si.decode(ChannelHandlerContext,ByteBuf,List) 入口——分帧器
        (splitter)切好整包后每包恰好调用一次,buf.readableBytes() = 包字节数
-       (不含分帧器 VarInt 长度前缀;压缩开启 = 压缩后字节数 + size 前缀)。
+       (不含分帧器 VarInt 长度前缀;压缩开启 = 解压后包体字节数——decompressor
+       已消费长度前缀)。
        大小与解码后类型跨挂钩传递:decode 与 channelRead0 同 channel 同 IO
        线程同步执行(decode → fireChannelRead → channelRead0 单调用栈,
        无穿插),经 ctx.channel().attr(AttributeKey "mosaic_packet_size")

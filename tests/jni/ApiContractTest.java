@@ -269,16 +269,16 @@ public class ApiContractTest {
         lst.close();
         ed.dispatch(join, pl4);
         check(lstCalls[0] == 1, "listener close stops delivery");
-        // 重入保护:监听器内再派发同事件 → depth guard 终止(≤ 8 次广播),
-        // 不无限循环(1000 上限仅防测试自身失控)
+        // 重入保护:监听器内再派发同事件 → depth guard 终止(恰 8 次广播:
+        // 深度 0→7 广播、深度 8 丢弃),不无限循环(1000 上限仅防测试自身失控)
         final int[] reent = {0};
         MosaicEventSubscription lstReent = ed.addEventListener(join, (e2, ex, p) -> {
             reent[0]++;
             if (reent[0] < 1000) ed.dispatch(join, pl4);
         });
         ed.dispatch(join, pl4);
-        check(reent[0] > 0 && reent[0] <= 8,
-              "reentrant listener depth-guarded (calls=" + reent[0] + ", max 8)");
+        check(reent[0] == 8,
+              "reentrant listener depth-guarded (calls=" + reent[0] + ", == 8)");
         lstReent.close();
         // 异常隔离:抛异常的监听器不影响其余监听器与派发返回值
         final int[] isoOk = {0};

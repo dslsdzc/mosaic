@@ -129,12 +129,14 @@ check "packet_received calls>=1" "packet_received event_id=[0-9]+ calls=[1-9]"
 check "packet_sent calls>=1" "packet_sent event_id=[0-9]+ calls=[1-9]"
 # Task 3:事件监听器(Java 观测通道)证据——agent 启动注册 → 真实 play 包
 # 派发返回后广播:LISTENER 行存在、载荷 12B(24 hex)、至少一条已知包载荷
-# (ChatMessage 0x0105 + 消息 size 51 = 0x33;player_id=1 全服唯一连接)
+# (ChatMessage 0x0105 + 消息 size 51 = 0x33;player_id = 运行时实体 id(进程内
+# 静态计数,不持久),world 复用重跑时玩家 id ≥ 2——门禁通配该字段,只锁
+# 与世界状态无关的确定性部分:packet_id 0x0105 + size 51)
 check "listener registered at startup" "listener registered for packet_received"
 check "listener packet_received broadcast" "LISTENER packet_received executed=[1-9][0-9]* payload=[0-9a-f]{24}"
 check "listener packet_sent broadcast" "LISTENER packet_sent executed=[1-9][0-9]* payload=[0-9a-f]{24}"
 check "listener known payload (ChatMessage 0x0105 size=51)" \
-  "LISTENER packet_received executed=[1-9][0-9]* payload=010000000501000033000000"
+  "LISTENER packet_received executed=[1-9][0-9]* payload=[0-9a-f]{8}0501000033000000"
 check "vanilla chat broadcast" "<$USER> hello from mosaic-client"
 check "chat_message extraction" "chat_message=.*hello from mosaic-client"
 grep -qa "\[PLAY\] entered play stage" "$CLIENT_LOG" || { echo "[e2e] MISS client reached play"; fail=1; }

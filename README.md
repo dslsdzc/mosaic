@@ -262,6 +262,9 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
   (typeId = 包目录 id)、listener 注册/注销,双代 Provider 语义映射(26.2 mojmap
   名直接对目录名 / 1.8.9 MCP 语义对照表,1.8.9 独有包 → UNKNOWN(0)),26.2/1.8.9
   契约全绿。
+- packet_sent 出站语义为"编码成功"而非"请求发送":PacketEncoder.encode 唯一
+  RETURN 出口前派发,ATHROW(编码失败)出口不派发——编码失败/中途异常丢弃的包
+  不计入 packet_sent(与包目录/事件目录语义一致,见 task-1-report.md)。
 - 网络包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注;sendPacket 的包编码
   与 vanilla API 监听器(MosaicPacketListener)→ 内核事件的分发接线待服务端环境;
   运行时事件监听器通道(本 README"事件监听器"节)已由 Task 3 交付并 E2E 验证)。
