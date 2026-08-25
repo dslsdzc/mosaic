@@ -1,13 +1,17 @@
 /* src/packets.c — M6-E:包类型目录 v1(网络域;名字 + 方向分组 id)。
-   目录按名字升序(ASCII 名:strcmp 序与 events.c 长度感知序一致);id 按
-   分组连续分配(UNKNOWN=0;组基址见 packets.h 注释,组内顺序 = 目录序)。
+   原始 168 条按名字升序(ASCII 名:strcmp 序与 events.c 长度感知序一致);
+   id 按分组连续分配(UNKNOWN=0;组基址见 packets.h 注释,组内顺序 = 目录序)。
+   [LC-2] 内嵌包变体 7 条追加在目录尾部(追加块内按名升序;既有 168 条 id
+   不动,新 id 按组续号)——变体名字含 '$',strcmp 序位在原 168 条之前,故
+   只能作追加块(详见 packets.h 注释)。
    清单来源:Mojang server_mappings(server.txt,1.20.1,2026-08-23 下载,
    sha1 0b4dba049482496c507b2387a73a913230ebbd76)提取的
    net.minecraft.network.protocol.* 下全部 Serverbound 与 Clientbound 包类
-   (168 类;协议态分布:PLAY_IN 46 / PLAY_OUT 109 / LOGIN_IN 3 / LOGIN_OUT 5
-   / STATUS_IN 2 / STATUS_OUT 2 / HANDSHAKE_IN 1;CONFIG_IN/OUT 1.20.1 无
-   config 态为空)。混淆名配对由 ci/gen_packet_map.sh 校验并生成 agent 映射
-   表(5+ 条 javap 实测抽查记录见 task-6-report.md)。
+   + 内嵌包变体(175 类 = 168 顶层 + 7 变体;协议态分布:PLAY_IN 50 /
+   PLAY_OUT 112 / LOGIN_IN 3 / LOGIN_OUT 5 / STATUS_IN 2 / STATUS_OUT 2 /
+   HANDSHAKE_IN 1;CONFIG_IN/OUT 1.20.1 无 config 态为空)。混淆名配对由
+   ci/gen_packet_map.sh 校验并生成 agent 映射表(5+ 条 javap 实测抽查记录
+   见 task-6-report.md;变体核实记录见 task-2-report.md)。
    BundleDelimiterPacket/BundlePacket(协议根包,编码器内非方向性工具类)
    不入目录——出现即 UNKNOWN(0)。 */
 #include "mosaic/packets.h"
@@ -182,6 +186,21 @@ const mosaic_packet_entry mosaic_packets_catalog[] = {
   { "ServerboundTeleportToEntityPacket", 0x012C },   /* PLAY_IN */
   { "ServerboundUseItemOnPacket", 0x012D },   /* PLAY_IN */
   { "ServerboundUseItemPacket", 0x012E },   /* PLAY_IN */
+  /* [LC-2] 内嵌包变体追加块:ServerboundMovePlayerPacket/ClientboundMoveEntity
+     Packet 为抽象包类,运行时实体 = 内嵌子类(混淆名 zx$a-d / wl$a-c,
+     getClass().getName() 返回 a$b 形式——映射表键即此形式,挂钩查表无需
+     改动)。此前查表未命中 → packet_id=0(UNKNOWN);现映射到本组续号 id
+     (PLAY_IN 续 0x012F..、PLAY_OUT 续 0x026E..)。混淆名 + Packet 子类性
+     经 server_mappings + javap 全量实测核实(javap 输出摘录见
+     .superpowers/sdd/task-2-report.md);其余包类的内嵌类(枚举/接口/记录/
+     数据持有类)非 Packet 子类,不入目录。块内按名升序。 */
+  { "ClientboundMoveEntityPacket$Pos", 0x026E },   /* PLAY_OUT */
+  { "ClientboundMoveEntityPacket$PosRot", 0x026F },   /* PLAY_OUT */
+  { "ClientboundMoveEntityPacket$Rot", 0x0270 },   /* PLAY_OUT */
+  { "ServerboundMovePlayerPacket$Pos", 0x012F },   /* PLAY_IN */
+  { "ServerboundMovePlayerPacket$PosRot", 0x0130 },   /* PLAY_IN */
+  { "ServerboundMovePlayerPacket$Rot", 0x0131 },   /* PLAY_IN */
+  { "ServerboundMovePlayerPacket$StatusOnly", 0x0132 },   /* PLAY_IN */
 };
 const u32 mosaic_packets_catalog_count =
     (u32)(sizeof(mosaic_packets_catalog) / sizeof(mosaic_packets_catalog[0]));

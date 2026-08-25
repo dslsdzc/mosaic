@@ -262,7 +262,8 @@ public class VanillaContractTest {
         catch (Exception ex) { check(false, "subscription close no-throw: " + ex); }
 
         // ---- 7.2:网络域真实路径(双代共同包语义对照 + 未知包 + 监听器生命周期) ----
-        // 语义锚 = 1.20.1 包目录 id(src/packets.c,168 条,Task 6);角色表为双代
+        // 语义锚 = 1.20.1 包目录 id(src/packets.c,175 条 = 168 顶层 + 7 内嵌
+        // 变体,Task 6 + LC-2);角色表为双代
         // 共同包(26.2 mojmap 类名直接对目录名;1.8.9 MCP 名经 Provider 语义对照
         // 表映射进同一 id 空间)。各角色经 env.packetObject(role) 构造该代真实
         // 包对象;不可构造 → 跳过该角色真实断言(NOTE,不失败,与 commandObject/

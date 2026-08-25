@@ -14,8 +14,9 @@
 #      错列出候选,不猜)。
 #   2. 反向覆盖:server.txt 中 net.minecraft.network.protocol.* 下全部包类
 #      (除 Packet 接口与 BundleDelimiterPacket/BundlePacket 两个编码器内
-#      非方向性工具类)必须全部出现在目录中——目录漏项 → 报错。
-#   3. 生成条目数 == 目录条目数(1.20.1 = 168)。
+#      非方向性工具类)+ 内嵌包变体(外层类 ∈ VARIANT_OUTERS,见下)必须全部
+#      出现在目录中——目录漏项 → 报错。
+#   3. 生成条目数 == 目录条目数(1.20.1 = 175:168 顶层包类 + 7 内嵌变体)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,18 +55,31 @@ import re, sys
 
 maps, catalog, out = sys.argv[1], sys.argv[2], sys.argv[3]
 
-# server.txt:全部 protocol 包类 (fqn, obf)
+# server.txt:全部 protocol 包类 + 内嵌包变体 (fqn, obf)
+# 内嵌变体判定(LC-2):内嵌类仅当外层类名 ∈ VARIANT_OUTERS 才入列。该集合
+# 经 javap 全量实测核实(2026-08-25,server-1.20.1.jar):1.20.1 仅
+# ServerboundMovePlayerPacket(zx)/ClientboundMoveEntityPacket(wl)两个抽象
+# 包类有 Packet 子类内嵌变体(zx$a-d、wl$a-c);其余包类的内嵌类为枚举/
+# 接口/记录/数据持有类(Operation/Handler/Action/Entry/Type/Stub 等,不
+# extends uo=Packet),非协议包变体——全量 javap 输出摘录见
+# .superpowers/sdd/task-2-report.md。外层集合与目录经反向覆盖门禁双向
+# 约束:单侧增删 → 报错(与 Bundle* 排除同款纪律)。
+VARIANT_OUTERS = {"ServerboundMovePlayerPacket", "ClientboundMoveEntityPacket"}
 by_name = {}
 all_packets = []
 for line in open(maps):
-    m = re.match(r'^(net\.minecraft\.network\.protocol\.[\w.]+) -> ([\w$]+):$', line)
+    m = re.match(r'^(net\.minecraft\.network\.protocol\.[\w.$]+) -> ([\w$]+):$', line)
     if not m:
         continue
     fqn, obf = m.group(1), m.group(2)
     if fqn.endswith('.Packet'):          # Packet 接口
         continue
     simple = fqn.split('.')[-1]
-    if not simple.endswith('Packet'):
+    if '$' in simple:
+        outer = simple.split('$')[0]     # 内嵌类:外层必须是已核实变体外层
+        if outer not in VARIANT_OUTERS:
+            continue
+    elif not simple.endswith('Packet'):
         continue
     if fqn.startswith('net.minecraft.network.protocol.Bundle'):
         continue                         # BundleDelimiterPacket/BundlePacket:
@@ -76,7 +90,7 @@ for line in open(maps):
 # packets.c 目录 (name, id)
 entries = []
 for line in open(catalog):
-    m = re.match(r'\s*\{\s*"([A-Za-z0-9]+)",\s*0x([0-9A-Fa-f]+)\s*\}', line)
+    m = re.match(r'\s*\{\s*"([A-Za-z0-9$]+)",\s*0x([0-9A-Fa-f]+)\s*\}', line)
     if m:
         entries.append((m.group(1), int(m.group(2), 16)))
 
@@ -90,7 +104,7 @@ if extra or missing:
     for n in sorted(extra):  print(f'  in server.txt but NOT in catalog: {n}', file=sys.stderr)
     for n in sorted(missing): print(f'  in catalog but NOT in server.txt: {n}', file=sys.stderr)
     sys.exit(1)
-assert len(entries) == 168, f'catalog count != 168: {len(entries)}'
+assert len(entries) == 175, f'catalog count != 175 (168 顶层 + 7 内嵌变体): {len(entries)}'
 
 # 逐项配对:每目录名恰一个候选(1.20.1 无重名;多候选 → 报错不猜)
 pairs = []
@@ -109,7 +123,9 @@ lines = [
     '',
     '/** 生成文件(ci/gen_packet_map.sh,勿手改):1.20.1 混淆包类名 → 包目录 id。',
     ' *  生成源 = Mojang server_mappings(server.txt,' + '1.20.1' + ')+ src/packets.c 目录;',
-    ' *  校验:目录名 ↔ 混淆名逐项配对 + 反向覆盖(server.txt 全部包类入目录)。',
+    ' *  校验:目录名 ↔ 混淆名逐项配对 + 反向覆盖(server.txt 全部包类 + 内嵌',
+    ' *  包变体入目录)。内嵌变体键 = 混淆内嵌名(zx$a 形式),与运行时',
+    ' *  getClass().getName() 对内嵌类返回的 a$b 形式一致。',
     ' *  id 语义见 include/mosaic/packets.h;未命中(非目录包/Unknown)→ 0。 */',
     'public final class PacketMap {',
     '    private PacketMap() {}',

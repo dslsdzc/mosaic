@@ -3,7 +3,8 @@ package mosaic.vanilla;
 import mosaic.Since;
 
 /** 网络包稳定投影(网络域,Task 7):语义锚定包目录 id(include/mosaic/packets.h,
- *  168 目录,1.20.1 锚定)。typeId = 包目录 id(未命中目录 → 0 = UNKNOWN);
+ *  175 目录 = 168 顶层 + 7 内嵌变体,1.20.1 锚定;Task 2(LC-2)补全)。
+ *  typeId = 包目录 id(未命中目录 → 0 = UNKNOWN);
  *  direction 与包目录 id 分组方向一致(0x01xx/0x05xx/0x07xx/0x09xx = IN,
  *  0x02xx/0x06xx/0x08xx = OUT;未知包按包类名约定推导);sizeHint = 包内容
  *  序列化大小——v1 无包内容序列化,恒 0(已知边界,README 标注);playerId =

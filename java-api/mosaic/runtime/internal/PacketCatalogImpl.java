@@ -4,10 +4,11 @@ package mosaic.runtime.internal;
  *  基准(契约测试经 Native.packetCatalogName 探测总数与 PACKET_NAMES 逐项
  *  双向比对,防 packets.c 与 Java 侧漂移;与 EventImpl.EVENT_NAMES 同款纪律,
  *  数量派生自 C 目录探测,不硬编码)。
- *  目录按名字升序,与 packets.c 完全同序;id 分组语义见 include/mosaic/packets.h
- *  (UNKNOWN=0、PLAY_IN 0x0101..、PLAY_OUT 0x0201..、LOGIN_IN 0x0501..、
- *  LOGIN_OUT 0x0601..、STATUS_IN 0x0701..、STATUS_OUT 0x0801..、
- *  HANDSHAKE_IN 0x0901..;CONFIG 组 1.20.1 为空)。
+ *  目录与 packets.c 完全同序:原始 168 条按名字升序,其后为 [LC-2] 追加的
+ *  内嵌包变体块(7 条,块内按名升序;id 按组续号,既有 id 不动);id 分组
+ *  语义见 include/mosaic/packets.h(UNKNOWN=0、PLAY_IN 0x0101..、PLAY_OUT
+ *  0x0201..、LOGIN_IN 0x0501..、LOGIN_OUT 0x0601..、STATUS_IN 0x0701..、
+ *  STATUS_OUT 0x0801..、HANDSHAKE_IN 0x0901..;CONFIG 组 1.20.1 为空)。
  *  运行时不用本表(agent 运行时查表用生成文件 PacketMap.java,见
  *  ci/gen_packet_map.sh);本表仅作跨语言一致性基准。 */
 public final class PacketCatalogImpl {
@@ -42,6 +43,13 @@ public final class PacketCatalogImpl {
             "ServerboundRecipeBookSeenRecipePacket", "ServerboundRenameItemPacket", "ServerboundResourcePackPacket", "ServerboundSeenAdvancementsPacket", "ServerboundSelectTradePacket", "ServerboundSetBeaconPacket",
             "ServerboundSetCarriedItemPacket", "ServerboundSetCommandBlockPacket", "ServerboundSetCommandMinecartPacket", "ServerboundSetCreativeModeSlotPacket", "ServerboundSetJigsawBlockPacket", "ServerboundSetStructureBlockPacket",
             "ServerboundSignUpdatePacket", "ServerboundStatusRequestPacket", "ServerboundSwingPacket", "ServerboundTeleportToEntityPacket", "ServerboundUseItemOnPacket", "ServerboundUseItemPacket",
+            /* [LC-2] 内嵌包变体(追加块,与 packets.c 目录尾部同序):抽象包类
+               ServerboundMovePlayerPacket/ClientboundMoveEntityPacket 的
+               Packet 子类内嵌变体(1.20.1 全量 javap 核实,见 task-2-report.md);
+               混淆名 zx$a-d / wl$a-c,运行时 Class.getName() 返回 a$b 形式,
+               PacketMap 键即此形式。 */
+            "ClientboundMoveEntityPacket$Pos", "ClientboundMoveEntityPacket$PosRot", "ClientboundMoveEntityPacket$Rot",
+            "ServerboundMovePlayerPacket$Pos", "ServerboundMovePlayerPacket$PosRot", "ServerboundMovePlayerPacket$Rot", "ServerboundMovePlayerPacket$StatusOnly",
     };
 
     /* ---------- 7.1:包名 → 目录 id(组基址 + 组内名字序秩) ----------
@@ -51,7 +59,8 @@ public final class PacketCatalogImpl {
      *  (ClientIntentionPacket 无 Serverbound 前缀,1.20.1 特有,单列)。
      *  id 可完全由 PACKET_NAMES + 组表推导——PACKET_NAMES ↔ packets.c 的
      *  N2 双向比对门禁(ApiContractTest)传递保证 id 不漂移;168 条逐项脚本
-     *  比对验证记录见 task-7-report.md。 */
+     *  比对验证记录见 task-7-report.md,[LC-2] 内嵌变体补全(175 条)记录见
+     *  task-2-report.md。 */
 
     private static final java.util.Set<String> LOGIN_IN = java.util.Set.of(
             "ServerboundCustomQueryPacket", "ServerboundHelloPacket",

@@ -1,4 +1,4 @@
-/* tests/test_packets.c — M6-E:包类型目录 v1。
+/* tests/test_packets.c — M6-E:包类型目录 v1(LC-2:内嵌变体补全)。
    目录完整性(规模/唯一/排序/分组 id 连续)+ 访问器(越界 null/负 index/
    逐项与目录同序)+ UNKNOWN 语义(0 不入目录)。
    包目录是纯常量表(无运行时注册态),测试零 fixture,纯静态断言。 */
@@ -18,19 +18,34 @@
 #define GRP_STATUS_OUT 0x0800u
 #define GRP_HANDSHAKE 0x0900u
 
-/* ---- 目录完整性:168 类、名字唯一、按名升序(ASCII:strcmp 序 == 长度
-     感知序)、id 全非 0(UNKNOWN=0 不入目录)、id 唯一 ---- */
+/* ---- 目录完整性:175 类(168 顶层 + 7 内嵌变体)、名字唯一、id 全非 0
+     (UNKNOWN=0 不入目录)、id 唯一 ---- */
 static void test_catalog_integrity(void) {
-  MT_CHECK_EQ_U64(mosaic_packets_catalog_count, 168);
+  MT_CHECK_EQ_U64(mosaic_packets_catalog_count, 175);
   for (u32 i = 0; i < mosaic_packets_catalog_count; i++) {
     const mosaic_packet_entry *e = &mosaic_packets_catalog[i];
     MT_CHECK(e->name != NULL && e->name[0] != '\0');
     MT_CHECK(e->id != 0);                      /* UNKNOWN=0 不入目录 */
     for (const char *p = e->name; *p; p++)
       MT_CHECK((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')
-               || (*p >= '0' && *p <= '9'));
-    if (i > 0)
-      MT_CHECK(strcmp(mosaic_packets_catalog[i - 1].name, e->name) < 0);
+               || (*p >= '0' && *p <= '9') || *p == '$');   /* LC-2:变体名含 '$' */
+  }
+  /* 排序纪律(LC-2):原始 168 条(非 '$' 名)按名升序(ASCII:strcmp 序 ==
+     长度感知序);内嵌变体块(名字含 '$')追加在目录尾部、块内按名升序——
+     '$' 名构成目录的连续后缀。断言派生自该结构(不硬编码边界):同块相邻
+     名严格升序 + 块边界只允许一次 非'$' → '$' 迁移。 */
+  int in_dollar_block = 0;
+  for (u32 i = 0; i < mosaic_packets_catalog_count; i++) {
+    int is_dollar = strchr(mosaic_packets_catalog[i].name, '$') != NULL;
+    if (i == 0) { in_dollar_block = is_dollar; continue; }
+    const char *prev = mosaic_packets_catalog[i - 1].name;
+    const char *cur = mosaic_packets_catalog[i].name;
+    if (is_dollar == in_dollar_block) {
+      MT_CHECK(strcmp(prev, cur) < 0);
+    } else {
+      MT_CHECK(!in_dollar_block && is_dollar);   /* 恰一次块边界(后缀) */
+      in_dollar_block = 1;
+    }
   }
 }
 
@@ -74,9 +89,10 @@ static void test_group_ids(void) {
       MT_CHECK(!"id 越出已知分组");
     }
   }
-  /* 1.20.1 协议态分布(与 packets.c 头注释一致) */
-  MT_CHECK_EQ_U64(in_play, 46);
-  MT_CHECK_EQ_U64(out_play, 109);
+  /* 1.20.1 协议态分布(与 packets.c 头注释一致;LC-2 内嵌变体并入分组:
+     PLAY_IN 46+4=50、PLAY_OUT 109+3=112) */
+  MT_CHECK_EQ_U64(in_play, 50);
+  MT_CHECK_EQ_U64(out_play, 112);
   MT_CHECK_EQ_U64(in_login, 3);
   MT_CHECK_EQ_U64(out_login, 5);
   MT_CHECK_EQ_U64(in_status, 2);
