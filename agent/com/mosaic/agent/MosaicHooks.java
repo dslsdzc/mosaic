@@ -172,8 +172,9 @@ public final class MosaicHooks {
        在各自末尾的 flush 并发执行 mods_compact(重建式)时,一方 free 旧哈希表、
        另一方正迭代 → SIGSEGV(E2E 首轮实测 hs_err:mods_compact+0x178;触发条件
        为 play 阶段客户端首个真实并发包流 + 自然实体生成)。串行化后 C 侧始终
-       至多一派发在飞,flush/compact 不并发——与 C 侧"单线程前提"一致;EV_CALLS/
-       EV_EXEC 非原子长整型计数亦随之安全。 */
+       至多一派发在飞,flush/compact 不并发——与 C 侧"单线程前提"一致。EV_CALLS/
+       EV_EXEC 为普通 long,锁外并发 read-modify-write 丢更新理论仍可能——自增
+       已移入本锁内(dispatch 与 /mosaic test 两处调用点,评审修复),计数安全。 */
     private static final Object DISPATCH_LOCK = new Object();
 
     /* ---- 1.20.1 混淆名反射句柄(premain 阶段服务端类尚未加载,
@@ -791,9 +792,10 @@ public final class MosaicHooks {
             int n;
             synchronized (DISPATCH_LOCK) {
                 n = Bridge.eventDispatch(rt, EV_IDS[idx], b);
+                /* 计数自增同锁(与 dispatch() 一致;打印在锁外) */
+                if (n > 0) EV_EXEC[idx] += n;
+                EV_CALLS[idx]++;
             }
-            if (n > 0) EV_EXEC[idx] += n;
-            EV_CALLS[idx]++;
             warnIfTimeout(idx);
             System.out.println("Mosaic agent: test dispatch " + ev + " -> executed=" + n);
         } else {
@@ -860,9 +862,11 @@ public final class MosaicHooks {
         int n;
         synchronized (DISPATCH_LOCK) {
             n = Bridge.eventDispatch(rt, EV_IDS[idx], payload);
+            /* 计数自增亦在锁内:EV_EXEC/EV_CALLS 为普通 long,锁外并发
+               read-modify-write 丢更新理论仍可能(评审修复;打印/告警在锁外) */
+            if (n > 0) EV_EXEC[idx] += n;
+            EV_CALLS[idx]++;
         }
-        if (n > 0) EV_EXEC[idx] += n;
-        EV_CALLS[idx]++;
         warnIfTimeout(idx);
     }
 

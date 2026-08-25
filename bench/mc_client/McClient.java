@@ -3,8 +3,10 @@
 //   NIO SocketChannel(阻塞)+ 手写 VarInt/String/帧编解码 + zlib(java.util.zip)。
 //   流程:握手(next state 2)→ LoginStart → LoginSuccess → 直接进 play(1.20.1 无
 //   配置阶段)→ KeepAlive 回发 / 传送确认+回位置 / 聊天命令 / 聊天消息 / 实体
-//   spawn 观测 → 8.5s 后主动断连(play 阶段无客户端断连包,关闭 socket 即断开,
-//   服务端记录 lost connection)。
+//   spawn 观测 → 动作序列(6.5s)完成后保持连接至 ~20s(>服务端 15s keepalive
+//   间隔,首个 KeepAlive 到达并回显真实发生,证据见任务报告 §2.3g;评审修复:
+//   此前 8.5s 断连早于 keepalive 间隔,回发路径从未被行使)→ 主动断连
+//   (play 阶段无客户端断连包,关闭 socket 即断开,服务端记录 lost connection)。
 //
 // 协议字段语义(逐包;全部经服务端 jar 字节码 javap 实测核实,见
 // .superpowers/sdd/task-2-report.md §0):
@@ -87,7 +89,14 @@ public class McClient {
     static final long T_SUMMON = 3000;             /* /summon sheep:player_command + entity_spawn */
     static final long T_CHAT = 4500;               /* 聊天消息:player_chat */
     static final long T_STATUS_1 = 6500;           /* /mosaic status 终态 */
-    static final long T_CLOSE = 8500;              /* 优雅断连(直接关 socket) */
+    static final long T_CLOSE = 20000;             /* 优雅断连(直接关 socket)。
+                                                    > 服务端 keepalive 间隔 15s
+                                                    (vanilla ServerGamePacket
+                                                    ListenerImpl KEEPALIVE_INTERVAL
+                                                    =15000,实测)——保持连接等到
+                                                    首个 keepalive 到达并回显
+                                                    (评审修复:8.5s < 15s 时回发
+                                                    路径从未被 E2E 行使) */
     static final long T_TIMEOUT = 30000;
 
     static final String HOST_ARG = "127.0.0.1";
@@ -100,6 +109,7 @@ public class McClient {
     long playStart = -1;
     boolean closed = false;
     boolean[] sent = new boolean[8];               /* 动作去重 */
+    int keepaliveEchoes = 0;                       /* KeepAlive 回显次数(证据计数) */
 
     /* 收到的字节积累器(帧级解析;1 MiB 上限防整帧内存放大) */
     byte[] in = new byte[1 << 20];
@@ -277,11 +287,16 @@ public class McClient {
             System.out.println("[RECV] " + nm + " id=0x" + Integer.toHexString(id)
                     + " size=" + p.length + (p.length <= 32 ? " body=" + hex(p) : ""));
             switch (id) {
-                case CB_KEEP_ALIVE: {              /* long 回显 */
+                case CB_KEEP_ALIVE: {              /* long 回显(服务端 15s 间隔,
+                                                      首个实测 ~t+15s 到达) */
                     long ka = readLong(p, new int[1]);
                     ByteArrayOutputStream b = new ByteArrayOutputStream();
                     writeLong(b, ka);
                     send(SB_KEEP_ALIVE, b.toByteArray(), "KeepAlive");
+                    keepaliveEchoes++;
+                    System.out.println("[PLAY] keepalive round-trip #" + keepaliveEchoes
+                            + " at t+" + ((System.currentTimeMillis() - playStart) / 1000.0) + "s"
+                            + " (echoed keepalive 0x" + Long.toHexString(ka) + ")");
                     break;
                 }
                 case CB_POSITION: {                /* 传送确认 + 回位置 */
@@ -382,6 +397,8 @@ public class McClient {
 
     void closeGracefully() {
         /* play 阶段无 serverbound 断开包;直接关 socket(服务端记 lost connection) */
+        System.out.println("[CLIENT] keepalive echoes=" + keepaliveEchoes
+                + " (server keepalive round-trips, 0x23 recv -> 0x12 echo)");
         System.out.println("[CLIENT] graceful close (socket close, no serverbound disconnect in play)");
         try { ch.close(); } catch (IOException e) { /* ignore */ }
         closed = true;

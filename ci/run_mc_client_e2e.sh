@@ -130,6 +130,10 @@ grep -qa "\[PLAY\] entered play stage" "$CLIENT_LOG" || { echo "[e2e] MISS clien
 grep -qa "\[SEND\] ChatCommand" "$CLIENT_LOG" || { echo "[e2e] MISS client chat command sent"; fail=1; }
 grep -qa "\[SEND\] ChatMessage" "$CLIENT_LOG" || { echo "[e2e] MISS client chat message sent"; fail=1; }
 grep -qa "\[RECV\] PlayerPositionAndLook" "$CLIENT_LOG" || { echo "[e2e] MISS position recv"; fail=1; }
+# KeepAlive 回显(评审修复:客户端存活 20s > 服务端 15s keepalive 间隔,
+# 首个 keepalive 到达并回发必须真实发生——此前 8.5s 断连从未行使此路径)
+grep -qa "\[RECV\] KeepAlive" "$CLIENT_LOG" || { echo "[e2e] MISS keepalive recv (server->client)"; fail=1; }
+grep -qa "\[SEND\] KeepAlive" "$CLIENT_LOG" || { echo "[e2e] MISS keepalive echo (client->server)"; fail=1; }
 [ "$RC" -eq 0 ] || { echo "[e2e] MISS client exit code (got $RC)"; fail=1; }
 
 echo
