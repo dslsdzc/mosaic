@@ -166,6 +166,16 @@ public final class MosaicHooks {
     private static int EV_PACKET_RECV = -1;
     private static int EV_PACKET_SENT = -1;
 
+    /* [Task 2 E2E 实测修复] 派发串行化:C 运行时派发假设单线程
+       (dispatch_depth 非原子;flush_pending_dlclose/mods_compact 无锁)——agent
+       hook 从 Netty IO 线程与服务端线程并发调用 Bridge.eventDispatch,两派发
+       在各自末尾的 flush 并发执行 mods_compact(重建式)时,一方 free 旧哈希表、
+       另一方正迭代 → SIGSEGV(E2E 首轮实测 hs_err:mods_compact+0x178;触发条件
+       为 play 阶段客户端首个真实并发包流 + 自然实体生成)。串行化后 C 侧始终
+       至多一派发在飞,flush/compact 不并发——与 C 侧"单线程前提"一致;EV_CALLS/
+       EV_EXEC 非原子长整型计数亦随之安全。 */
+    private static final Object DISPATCH_LOCK = new Object();
+
     /* ---- 1.20.1 混淆名反射句柄(premain 阶段服务端类尚未加载,
        故惰性解析:首次 hook 调用时解析,失败自动重试——首 tick 必然成功) ---- */
     private static Method M_ID;            /* aig.getId() (继承 bfj.af()) */
@@ -450,10 +460,18 @@ public final class MosaicHooks {
         } catch (Throwable t) { logErr("dispatchPlayerCommand", t); }
     }
 
-    /* 共享命令处理:仅 "/mosaic" 前缀命令由本 agent 消费 */
+    /* 共享命令处理:仅 "/mosaic" 前缀命令由本 agent 消费。
+       [Task 2 E2E 实测修正] 1.20.1 两条命令路径传入本 hook 的字符串都无前导
+       '/':chat 路径的 ServerboundChatCommandPacket 命令字段在客户端发送前剥离
+       '/' (dt.a(ParseResults,String) 注入点收到即包字段原串);控制台/RCON 路径
+       performPrefixedCommand 内部先剥 '/' 再调 dt.a(ParseResults,String)(javap
+       反汇编证实)。故 "/mosaic" 前缀判定须归一化去 '/'——否则 chat 路径的
+       /mosaic 命令永不被消费(M8-D 时 chat 路径无客户端不可达,此缺陷未暴露)。
+       "mosaic" 后必须跟空白或结尾,避免误消费 "mosaictest" 等前缀命令。 */
     private static boolean handleCommand(String cmd) {
-        /* "/mosaic" 后必须跟空白或结尾,避免误消费 "/mosaictest" 等前缀命令 */
-        if (cmd == null || (!cmd.equals("/mosaic") && !cmd.startsWith("/mosaic "))) return false;
+        if (cmd == null) return false;
+        String c = cmd.startsWith("/") ? cmd.substring(1) : cmd;
+        if (!c.equals("mosaic") && !c.startsWith("mosaic ")) return false;
         handleMosaic(cmd);
         return true;
     }
@@ -728,6 +746,10 @@ public final class MosaicHooks {
                         + " calls=" + EV_CALLS[i]
                         + " executed=" + EV_EXEC[i]);
             }
+            /* Task 2:player_chat 内容提取观测(5.5 反馈通道静态 accessor;
+               E2E 客户端发 chat 消息后与发送文本核对) */
+            System.out.println("Mosaic agent:   chat_message=\""
+                    + (chatMessage == null ? "" : chatMessage) + "\"");
         } else if (sub.equals("install")) {
             /* M4-3:世界内动态加载——运行中挂载新 pack(零重启),挂载后下个
                tick 的派发即覆盖其订阅者(dispatch 遍历 rt->packs)。
@@ -766,7 +788,10 @@ public final class MosaicHooks {
             }
             byte[] b = payloadFor(idx, vals);
             if (b == null) { System.out.println("Mosaic agent: test: bad payload for " + ev); return; }
-            int n = Bridge.eventDispatch(rt, EV_IDS[idx], b);
+            int n;
+            synchronized (DISPATCH_LOCK) {
+                n = Bridge.eventDispatch(rt, EV_IDS[idx], b);
+            }
             if (n > 0) EV_EXEC[idx] += n;
             EV_CALLS[idx]++;
             warnIfTimeout(idx);
@@ -832,7 +857,10 @@ public final class MosaicHooks {
        200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警)。 */
     private static void dispatch(int idx, byte[] payload) {
         if (EV_IDS[idx] < 0) return;
-        int n = Bridge.eventDispatch(rt, EV_IDS[idx], payload);
+        int n;
+        synchronized (DISPATCH_LOCK) {
+            n = Bridge.eventDispatch(rt, EV_IDS[idx], payload);
+        }
         if (n > 0) EV_EXEC[idx] += n;
         EV_CALLS[idx]++;
         warnIfTimeout(idx);
