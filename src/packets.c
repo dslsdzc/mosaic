@@ -211,3 +211,9 @@ const char *mosaic_packet_catalog_name(u32 index) {
   return mosaic_packets_catalog[index].name;
 }
 
+/* LC-3 公式门禁:目录实际 id 访问器(实现见 packets.h 声明注释)。 */
+u32 mosaic_packet_catalog_id(u32 index) {
+  if (index >= mosaic_packets_catalog_count) return 0;
+  return mosaic_packets_catalog[index].id;
+}
+

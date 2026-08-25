@@ -175,6 +175,16 @@ JNIEXPORT jstring JNICALL Java_mosaic_Bridge_packetCatalogName(JNIEnv *env, jcla
   return n ? (*env)->NewStringUTF(env, n) : NULL;
 }
 
+/* LC-3:包目录 id 访问器(公式门禁)。返回目录第 index 个条目的实际 id
+   (packets.c id 列);越界(含负 index 经 u32 包装)→ 0(UNKNOWN=0 不入目录,
+   0 即"无"哨兵)。Java 契约测试遍历全部条目,把公式(base+1+rank,分组表)
+   重算值与目录实际 id 双向比对——任一侧漂移 → 测试红。 */
+JNIEXPORT jint JNICALL Java_mosaic_Bridge_packetCatalogId(JNIEnv *env, jclass cls,
+                                                          jint index) {
+  (void)env; (void)cls;
+  return (jint)mosaic_packet_catalog_id((u32)index);
+}
+
 /* ===== M5:函数生命周期 ===== */
 JNIEXPORT jlong JNICALL Java_mosaic_Bridge_fnMaterialize(JNIEnv *env, jclass c, jlong rt_, jlong fnId) {
   (void)env; (void)c;

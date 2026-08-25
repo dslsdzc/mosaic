@@ -97,4 +97,7 @@ public final class Native {
     /* M6-E:包目录访问器(契约门禁用;packets.c ↔ PACKET_NAMES 双向比对) */
     public static String packetCatalogName(int index) {
         return mosaic.Bridge.packetCatalogName(index); }
+    /* LC-3:包目录实际 id 访问器(公式门禁用;越界 → 0)。 */
+    public static int packetCatalogId(int index) {
+        return mosaic.Bridge.packetCatalogId(index); }
 }

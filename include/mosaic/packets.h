@@ -45,4 +45,10 @@ extern const u32 mosaic_packets_catalog_count;
    → Java 比对失败 → 测试红,防目录跨语言漂移。 */
 const char *mosaic_packet_catalog_name(u32 index);
 
+/* 目录访问器(LC-3 公式门禁用):返回第 index 个条目的实际 id(packets.c
+   id 列,与名字访问器同族);越界 → 0(UNKNOWN=0 不入目录,0 即"无"哨兵)。
+   Java 契约测试经 JNI 遍历全部 id 与公式(base+1+rank,分组表)重算值
+   双向比对——公式/分组表/目录 id 任一侧漂移 → 测试红。 */
+u32 mosaic_packet_catalog_id(u32 index);
+
 #endif

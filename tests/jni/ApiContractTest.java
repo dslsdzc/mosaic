@@ -10,6 +10,7 @@ import mosaic.runtime.internal.EvictionPolicyImpl;
 import mosaic.runtime.internal.Native;
 import mosaic.runtime.internal.OwnedResourceImpl;
 import mosaic.runtime.internal.PackBuilderImpl;
+import mosaic.runtime.internal.PacketCatalogImpl;
 import mosaic.runtime.internal.StateTransformImpl;
 import mosaic.runtime.internal.TaskDependencyImpl;
 import mosaic.runtime.internal.TaskResultImpl;
@@ -130,6 +131,43 @@ public class ApiContractTest {
               "packet catalog accessor out-of-range -> null");
         check(Native.packetCatalogName(-1) == null,
               "packet catalog accessor negative index -> null");
+
+        // ---- LC-3:包目录公式门禁(packets.c 实际 id ↔ 公式 base+1+rank)----
+        // 目录实际 id 经新增 packetCatalogId 访问器探测(与名字访问器同族;
+        // 越界 → 0——UNKNOWN=0 不入目录,0 即"无"哨兵)。双向比对:
+        //   方向 A(公式对):公式(name_i) == 目录 id_i——防分组表/基址/秩
+        //     推导漂移(如误把 ServerboundHelloPacket 从 LOGIN_IN 落回前缀
+        //     默认组 PLAY_IN,其公式 id 立刻偏离目录 id);
+        //   方向 B(目录对):目录 id_i 的公式逆解(唯一名字) == name_i,且公式
+        //     id 具注入性——防目录 id 漂移(改 packets.c 一个 id → 逆解失配
+        //     或 id 冲突)。N2 已保证名字双端一致,本门禁在其上校验 id 维度,
+        //     二者合计 = 公式/分组表/目录全维度互锁。
+        // 数量派生:packetCatalogSize 由上段逐项探测得到(不写死 175)。
+        java.util.Map<Integer, String> formulaIdToName = new java.util.HashMap<>();
+        for (String nm : javaPackets) {
+            int fid = PacketCatalogImpl.packetIdOf(nm);
+            check(fid != 0, "LC3 formula id non-zero for catalog name '" + nm + "'");
+            String prev = formulaIdToName.put(fid, nm);
+            check(prev == null,
+                  "LC3 formula id collision: '" + prev + "' and '" + nm + "' both -> 0x"
+                      + Integer.toHexString(fid));
+        }
+        for (int i = 0; i < packetCatalogSize; i++) {
+            String cn = Native.packetCatalogName(i);
+            int expected = PacketCatalogImpl.packetIdOf(cn);   /* 公式:base+1+rank */
+            int actual = Native.packetCatalogId(i);            /* 目录实际 id */
+            check(expected == actual,
+                  "LC3 formula id[" + i + "] '" + cn + "': formula=0x"
+                      + Integer.toHexString(expected) + " catalog=0x" + Integer.toHexString(actual));
+            String resolved = formulaIdToName.get(actual);
+            check(javaPackets[i].equals(resolved),
+                  "LC3 reverse id[" + i + "] 0x" + Integer.toHexString(actual)
+                      + " resolves to '" + resolved + "', catalog name '" + javaPackets[i] + "'");
+        }
+        check(Native.packetCatalogId(packetCatalogSize) == 0,
+              "packet catalog id accessor out-of-range -> 0");
+        check(Native.packetCatalogId(-1) == 0,
+              "packet catalog id accessor negative index -> 0");
 
         // ---- M6-A:事件载荷类型化解码 / 编解码工具 / 自诊断桥 ----
         // player 域 {player_id=7}(4B 小端)→ decodeInts()[0]==7(测试包仅注册
