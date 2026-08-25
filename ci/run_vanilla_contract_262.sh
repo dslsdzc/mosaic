@@ -28,5 +28,7 @@ CP="build/japi:lib/mc-versions/vanilla-26.2.jar:$LIBS"
 cp java-api/mosaic/vanilla/internal/*.properties build/japi/mosaic/vanilla/internal/
 "$JDK/bin/javac" -cp "$CP" -d build/jvanilla \
       tests/jni/vanilla/*.java
-"$JDK/bin/java" -cp "build/jvanilla:$CP" \
+# Task 3:事件监听器运行时契约用例需要 native 库(build/lib/libmosaic_jni.so,
+# cmake build 产物)——java.library.path 指过去;库缺失时用例自动跳过(NOTE)
+"$JDK/bin/java" -Djava.library.path=build/lib -cp "build/jvanilla:$CP" \
      VanillaContractTest Vanilla262Env

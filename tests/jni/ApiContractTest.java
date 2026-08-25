@@ -185,6 +185,26 @@ public class ApiContractTest {
         check(npl.encode().length == 12, "M6E network payload encode 12B");
         try { MosaicEventPayload.of(netId, new byte[8]); check(false, "M6E net payload len mismatch should throw"); }
         catch (MosaicHandleException e) { check(true, "M6E net payload len mismatch throws"); }
+        // Task 3.2:packet 事件监听器收到 12B 载荷(eventId/执行数/载荷
+        // 逐字节一致;本 pack 0 函数 → C 执行数 0)
+        final byte[] pkt12 = new byte[]{7, 0, 0, 0, (byte) 0x05, 0x01, 0, 0, 0x2A, 0, 0, 0};
+        final int[] netGot = {0};
+        final int[] netExec = {-1};
+        final byte[][] netPayload = {null};
+        MosaicEventSubscription nl = rtNet.eventDispatcher().addEventListener(netId, (ev, executed, payload) -> {
+            netGot[0]++;
+            netExec[0] = executed;
+            netPayload[0] = payload;
+            check(ev != null && ev.eventId() == netId && "packet_received".equals(ev.name())
+                    && ev.payloadSize() == 12, "net listener receives MosaicEvent (id/name/size)");
+        });
+        int nNet = rtNet.eventDispatcher().dispatch(netId, pkt12);
+        check(netGot[0] == 1, "net listener called once, got " + netGot[0]);
+        check(netExec[0] == 0 && nNet == 0, "net listener executed==0 (no C subscribers), got " + netExec[0]);
+        check(Arrays.equals(netPayload[0], pkt12), "net listener payload byte-identical (12B)");
+        nl.close();
+        rtNet.eventDispatcher().dispatch(netId, pkt12);
+        check(netGot[0] == 1, "net listener close stops delivery");
         rtNet.close();
 
         // 自诊断桥:句柄 != 0、lastError 可读且与运行时同源
@@ -222,6 +242,51 @@ public class ApiContractTest {
         sub.close();
         ed.dispatch(rt.eventId("player_join"), new byte[4]);
         check(javaCalls[0] == 1, "subscription closed stops calls");
+
+        // ---- Task 3.1/3.2:事件监听器契约(Java 观测通道)——注册 →
+        // ed.dispatch 真实调用 Bridge.eventDispatch → 派发返回后广播。
+        // 执行数 = C 内核订阅者执行数(本 pack player_join 2 触发器;
+        // 广播不改变派发返回/计数——叠加语义)。 ----
+        final int[] lstCalls = {0};
+        final int[] lstExec = {-1};
+        final byte[][] lstPayload = {null};
+        MosaicEventSubscription lst = ed.addEventListener(join, (ev, executed, payload) -> {
+            lstCalls[0]++;
+            lstExec[0] = executed;
+            lstPayload[0] = payload;
+            check(ev != null && ev.eventId() == join && "player_join".equals(ev.name()),
+                  "listener receives MosaicEvent (id/name)");
+        });
+        /* 载荷全零:本 pack 的 fn(1,1) = code_add(counter += 载荷 u32),
+           非零载荷会污染 M6-B 状态断言——执行数断言不依赖载荷内容 */
+        byte[] pl4 = new byte[4];
+        int nLst = ed.dispatch(join, pl4);
+        check(lstCalls[0] == 1, "listener called once, got " + lstCalls[0]);
+        check(lstExec[0] == 2, "listener executed==2 (C subscribers), got " + lstExec[0]);
+        check(nLst == 2, "dispatch return unaffected by listener (==2), got " + nLst);
+        check(Arrays.equals(lstPayload[0], pl4), "listener payload byte-identical");
+        // 生命周期:注销 → 不再收到
+        lst.close();
+        ed.dispatch(join, pl4);
+        check(lstCalls[0] == 1, "listener close stops delivery");
+        // 重入保护:监听器内再派发同事件 → depth guard 终止(≤ 8 次广播),
+        // 不无限循环(1000 上限仅防测试自身失控)
+        final int[] reent = {0};
+        MosaicEventSubscription lstReent = ed.addEventListener(join, (e2, ex, p) -> {
+            reent[0]++;
+            if (reent[0] < 1000) ed.dispatch(join, pl4);
+        });
+        ed.dispatch(join, pl4);
+        check(reent[0] > 0 && reent[0] <= 8,
+              "reentrant listener depth-guarded (calls=" + reent[0] + ", max 8)");
+        lstReent.close();
+        // 异常隔离:抛异常的监听器不影响其余监听器与派发返回值
+        final int[] isoOk = {0};
+        ed.addEventListener(join, (e2, ex, p) -> { throw new RuntimeException("listener boom"); });
+        ed.addEventListener(join, (e2, ex, p) -> isoOk[0]++);
+        int nIso = ed.dispatch(join, pl4);
+        check(isoOk[0] == 1, "listener exception isolated (sibling still called), got " + isoOk[0]);
+        check(nIso == 2, "listener exception does not affect dispatch return, got " + nIso);
 
         // 调度器(纯 Java)
         MosaicScheduler sched = rt.scheduler();

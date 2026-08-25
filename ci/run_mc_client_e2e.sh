@@ -42,7 +42,10 @@ sleep 2
 : > "$LOG"
 
 # ---- 3. 起服(后台;输出 → console.log;exec 使 $! = java 进程本身) ----
-( cd "$REPO/$SRV" && exec java -javaagent:../build/lib/mosaic-agent.jar -Xmx1G \
+# Task 3:-Dmosaic.listen=packet_received,packet_sent → agent 启动时注册内置
+# 事件监听器(Java 观测通道),每包派发返回后打印 LISTENER 行(证据 §8)
+( cd "$REPO/$SRV" && exec java -javaagent:../build/lib/mosaic-agent.jar \
+    -Dmosaic.listen=packet_received,packet_sent -Xmx1G \
     -jar minecraft_server.1.20.1.jar nogui ) > "$LOG" 2>&1 &
 echo $! > "$PID_FILE"
 for i in $(seq 1 $START_WAIT); do
@@ -124,6 +127,14 @@ check "player_chat calls>=1" "player_chat event_id=[0-9]+ calls=[1-9]"
 check "entity_spawn calls>=1" "entity_spawn event_id=[0-9]+ calls=[1-9]"
 check "packet_received calls>=1" "packet_received event_id=[0-9]+ calls=[1-9]"
 check "packet_sent calls>=1" "packet_sent event_id=[0-9]+ calls=[1-9]"
+# Task 3:事件监听器(Java 观测通道)证据——agent 启动注册 → 真实 play 包
+# 派发返回后广播:LISTENER 行存在、载荷 12B(24 hex)、至少一条已知包载荷
+# (ChatMessage 0x0105 + 消息 size 51 = 0x33;player_id=1 全服唯一连接)
+check "listener registered at startup" "listener registered for packet_received"
+check "listener packet_received broadcast" "LISTENER packet_received executed=[1-9][0-9]* payload=[0-9a-f]{24}"
+check "listener packet_sent broadcast" "LISTENER packet_sent executed=[1-9][0-9]* payload=[0-9a-f]{24}"
+check "listener known payload (ChatMessage 0x0105 size=51)" \
+  "LISTENER packet_received executed=[1-9][0-9]* payload=010000000501000033000000"
 check "vanilla chat broadcast" "<$USER> hello from mosaic-client"
 check "chat_message extraction" "chat_message=.*hello from mosaic-client"
 grep -qa "\[PLAY\] entered play stage" "$CLIENT_LOG" || { echo "[e2e] MISS client reached play"; fail=1; }
@@ -141,6 +152,11 @@ echo "=== E2E evidence: server console (agent status / join / chat lines) ==="
 grep -aE "logged in with entity id|UUID of player|lost connection" "$LOG" || true
 grep -aE "Mosaic agent: (status|  (player_|packet_|entity_|chat_message|server_|block_|tick))" "$LOG" | tail -40 || true
 grep -aE "<$USER> |chat_message=" "$LOG" || true
+echo
+echo "=== E2E evidence: event listener channel (Task 3; registration + samples + counts) ==="
+grep -aE "Mosaic agent: (listener registered|LISTENER)" "$LOG" | head -8 || true
+grep -aE "LISTENER packet_received" "$LOG" | wc -l | sed 's/^/listener packet_received lines: /'
+grep -aE "LISTENER packet_sent" "$LOG" | wc -l | sed 's/^/listener packet_sent lines: /'
 echo
 echo "=== E2E evidence: client log (hashes / login / actions / frames) ==="
 grep -aE "\[(HASH|LOGIN|PLAY|CLIENT)\]" "$CLIENT_LOG" | head -30 || true

@@ -8,14 +8,28 @@ import mosaic.runtime.MosaicEvent;
 import mosaic.runtime.MosaicEventCatalog;
 import mosaic.runtime.MosaicEventDispatcher;
 import mosaic.runtime.MosaicEventHandler;
+import mosaic.runtime.MosaicEventListener;
 import mosaic.runtime.MosaicEventSubscription;
 
-/** 事件域实现:派发 = C 内核订阅者(Native.eventDispatch)+ Java 侧订阅表;
+/** 事件域实现:派发 = C 内核订阅者(Native.eventDispatch)+ Java 侧订阅表
+ *  + 派发后广播(Java 观测通道,Task 3);
  *  目录 = events.h 事件名常量表(数量以 C 目录为准:契约测试经
  *  Native.eventCatalogName 探测总数与 EVENT_NAMES 双向比对)。 */
 public final class EventImpl implements MosaicEventDispatcher {
     private final RuntimeImpl rt;
     private final Map<Integer, List<MosaicEventHandler>> handlers = new HashMap<>();
+    /* Task 3:事件监听器(观测通道)——派发返回后广播;与 handlers 并行的
+       第二张表(语义区别见 MosaicEventListener 类注释)。 */
+    private final Map<Integer, List<MosaicEventListener>> listeners = new HashMap<>();
+    /* eventId → MosaicEvent 懒解析缓存(事件表 open 时固定——runtimeAddPack
+       要求事件表与 pack 0 一致,无失效;未注册 id 缓存 null 防重复扫描)。 */
+    private final Map<Integer, MosaicEvent> eventCache = new HashMap<>();
+    /* 重入保护:监听器回调内再派发 → 同线程广播深度超限丢弃广播(嵌套派发
+       照常执行),防无限循环。ThreadLocal:递归必然同线程,跨线程并发派发
+       互不影响(各自深度独立)。 */
+    private static final int MAX_BROADCAST_DEPTH = 8;
+    private static final ThreadLocal<Integer> BROADCAST_DEPTH =
+            ThreadLocal.withInitial(() -> 0);
 
     EventImpl(RuntimeImpl rt) { this.rt = rt; }
 
@@ -24,11 +38,14 @@ public final class EventImpl implements MosaicEventDispatcher {
         List<MosaicEventHandler> list;
         synchronized (handlers) {
             list = handlers.get(eventId);
-            if (list == null) return n;
-            list = new ArrayList<>(list);
+            if (list != null) list = new ArrayList<>(list);
         }
-        for (MosaicEventHandler h : list) h.onEvent(eventId, payload);
-        return n + list.size();
+        int handlerCount = 0;
+        if (list != null) {
+            for (MosaicEventHandler h : list) { h.onEvent(eventId, payload); handlerCount++; }
+        }
+        broadcast(eventId, payload, n);
+        return n + handlerCount;
     }
 
     public MosaicEventSubscription subscribe(int eventId, MosaicEventHandler handler) {
@@ -48,6 +65,80 @@ public final class EventImpl implements MosaicEventDispatcher {
         }
     }
 
+    /* ---- Task 3:事件监听器(观测通道)——注册/注销;广播见 dispatch ---- */
+    public MosaicEventSubscription addEventListener(int eventId, MosaicEventListener listener) {
+        if (listener == null) throw new NullPointerException("listener");
+        synchronized (listeners) {
+            listeners.computeIfAbsent(eventId, k -> new ArrayList<>()).add(listener);
+        }
+        return new ListenerSubscriptionImpl(eventId, listener);
+    }
+
+    public void removeEventListener(MosaicEventSubscription subscription) {
+        if (!(subscription instanceof ListenerSubscriptionImpl)) return;
+        ListenerSubscriptionImpl s = (ListenerSubscriptionImpl) subscription;
+        synchronized (listeners) {
+            List<MosaicEventListener> list = listeners.get(s.eventId);
+            if (list != null) list.remove(s.listener);
+        }
+    }
+
+    /* 派发返回后广播(观测通道;语义见 MosaicEventListener 类注释):
+       - 快照副本上执行(注册/注销并发安全;同事件先后注册 → 按序回调);
+       - 重入保护:同线程广播深度 >= MAX 丢弃本次广播(告警;嵌套派发本身
+         照常执行——guard 只保护广播递归,不影响 C 派发);
+       - 异常隔离:单监听器抛异常 → 告警并继续其余监听器,不传播。 */
+    private void broadcast(int eventId, byte[] payload, int executed) {
+        int depth = BROADCAST_DEPTH.get();
+        if (depth >= MAX_BROADCAST_DEPTH) {
+            System.err.println("Mosaic: listener broadcast depth exceeded ("
+                    + MAX_BROADCAST_DEPTH + "), nested dispatch event " + eventId
+                    + " not broadcast (reentrancy guard)");
+            return;
+        }
+        List<MosaicEventListener> list;
+        synchronized (listeners) {
+            list = listeners.get(eventId);
+            if (list == null || list.isEmpty()) return;
+            list = new ArrayList<>(list);
+        }
+        MosaicEvent ev = eventFor(eventId);
+        BROADCAST_DEPTH.set(depth + 1);
+        try {
+            for (MosaicEventListener l : list) {
+                try {
+                    l.onEventDispatched(ev, executed, payload);
+                } catch (Throwable t) {
+                    System.err.println("Mosaic: event listener error (event " + eventId
+                            + "): " + t);
+                }
+            }
+        } finally {
+            BROADCAST_DEPTH.set(depth);
+        }
+    }
+
+    /* eventId → MosaicEvent 目录条目(懒解析 + 缓存;未注册事件 → null)。
+       目录条目复用 EventCatalogImpl 的 EventEntryImpl(eventId 命中时
+       EVENT_NAMES 唯一,名字/载荷大小确定)。 */
+    private MosaicEvent eventFor(int eventId) {
+        synchronized (eventCache) {
+            MosaicEvent ev = eventCache.get(eventId);
+            if (ev != null) return ev;
+            if (eventCache.containsKey(eventId)) return null;   /* 缓存 miss */
+            for (String name : EventCatalogImpl.EVENT_NAMES) {
+                if (Native.eventId(rt.handle(), name) == eventId) {
+                    ev = new EventEntryImpl(eventId, name,
+                            EventCatalogImpl.payloadSize(name));
+                    eventCache.put(eventId, ev);
+                    return ev;
+                }
+            }
+            eventCache.put(eventId, null);
+            return null;
+        }
+    }
+
     MosaicEventCatalog catalog() { return new EventCatalogImpl(rt); }
 
     /* ---- 订阅句柄(非静态:close 回链到 EventImpl.unsubscribe) ---- */
@@ -60,6 +151,18 @@ public final class EventImpl implements MosaicEventDispatcher {
         }
         public int eventId() { return eventId; }
         public void close() { unsubscribe(this); }
+    }
+
+    /* ---- 监听器句柄(Task 3;close 回链到 removeEventListener) ---- */
+    private final class ListenerSubscriptionImpl implements MosaicEventSubscription {
+        final int eventId;
+        final MosaicEventListener listener;
+        ListenerSubscriptionImpl(int eventId, MosaicEventListener listener) {
+            this.eventId = eventId;
+            this.listener = listener;
+        }
+        public int eventId() { return eventId; }
+        public void close() { removeEventListener(this); }
     }
 
     /* ---- 目录(events.h 名字抄录——双端比对基准,数量派生自 C 目录

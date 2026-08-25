@@ -216,6 +216,38 @@ tick 立即执行(世界内加载生效);重叠安装 world.pack(模块 1 与已
 bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 → 运行
 ```
 
+## 事件监听器(Java 观测通道)(Task 3)
+
+**机制**:所有 C 派发都源自 Java 调用 `Bridge.eventDispatch`(内核无自触发
+路径)——故"C 派发 → Java 监听器" = "Java 派发返回后广播",广播层纯 Java
+侧,内核零改动。
+
+- 稳定 API(`@Since(1)`,`MosaicEventDispatcher.addEventListener/removeEventListener`
+  + `MosaicEventListener`):注册监听器 → `EventImpl.dispatch` 真实调用
+  C 内核 → 派发返回后广播 `onEventDispatched(MosaicEvent, executed, byte[])`
+  ——事件目录条目(按 eventId 解析,懒缓存)、C 订阅者执行数、原始载荷
+  byte[](只读约定)。**重入保护**:监听器回调内再派发 → 同线程广播深度
+  ≥ 8 丢弃该次广播(嵌套派发照常执行),防无限循环;**异常隔离**:单监听器
+  抛异常 → 告警并继续其余监听器与派发返回值。广播是叠加——不改变派发
+  返回/计数。
+- **与 C 订阅者并行、不互斥**:C 内核订阅者(触发函数)照常执行,
+  Java handler(subscribe)照常执行,监听器是第三路观测者,三者独立。
+- **与 Java handler 的区别**:handler 计入派发返回值、异常向上传播
+  (既有语义);listener 不计入返回值、异常隔离(观测者语义)。
+- **agent 接线**(agent 内部,非稳定 API):`MosaicHooks.registerListener/
+  unregisterListener`,广播定位在 `DISPATCH_LOCK` **之外**(锁内执行用户
+  回调有死锁/阻塞风险;广播载荷是本次派发局部快照,一致性不依赖锁);
+  启动注册:`-Dmosaic.listen=packet_received,packet_sent`(逗号分隔事件名)
+  → agent 内置监听器每包派发后打印 `LISTENER <event> executed=N payload=…`
+  (E2E 证据口,见 `ci/run_mc_client_e2e.sh`)。
+- **双代契约**:监听器用例在共享套件运行(`ApiContractTest` 运行时域 +
+  `VanillaContractTest` 网络域段;运行时与 MC 版本无关,26.2/1.8.9 同断言;
+  vanilla 脚本需 C 构建产物 `build/lib/libmosaic_jni.so`——缺失时用例
+  NOTE 跳过,`gates.sh` 顺序构建后必跑)。
+- **注意**:`MosaicRuntime.eventDispatch` 为直通 native 的快捷路径,不经
+  `EventImpl.dispatch`,不广播——观测通道入口是
+  `rt.eventDispatcher().dispatch(...)`。
+
 ## 已知边界
 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
@@ -231,7 +263,10 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
   名直接对目录名 / 1.8.9 MCP 语义对照表,1.8.9 独有包 → UNKNOWN(0)),26.2/1.8.9
   契约全绿。
 - 网络包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注;sendPacket 的包编码
-  与 API 监听器 → 内核事件的分发接线待服务端环境)。
+  与 vanilla API 监听器(MosaicPacketListener)→ 内核事件的分发接线待服务端环境;
+  运行时事件监听器通道(本 README"事件监听器"节)已由 Task 3 交付并 E2E 验证)。
+- 1.20.1 Provider(java-api 上 1.20.1 服务端)仍后补:运行时监听器观测通道已
+  经 agent 接线(E2E 实测),但 `mosaic.vanilla` Provider 的服务端形态未交付。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
 - 派发跨线程不在支持范围:agent 的 Netty IO 线程包钩子(packet_received/sent)
   与服务器线程的 tick/命令派发并发执行,冷订阅者(未物化)并发物化存在竞态

@@ -69,6 +69,25 @@ public final class MosaicAgent {
                 opened = true;
                 System.out.println("Mosaic agent: runtime opened (functions=" + n
                         + "), transformer registered");
+                /* Task 3:事件监听器(Java 观测通道)启动注册——-Dmosaic.listen
+                   系统属性,逗号分隔事件名;内置监听器打印每包派发
+                   (event/executed/payload hex)。E2E:
+                   -Dmosaic.listen=packet_received,packet_sent */
+                String listen = System.getProperty("mosaic.listen", "").trim();
+                if (!listen.isEmpty()) {
+                    for (String name : listen.split(",")) {
+                        name = name.trim();
+                        if (name.isEmpty()) continue;
+                        boolean ok = MosaicHooks.registerListener(name,
+                                (ev, executed, payload) -> System.out.println(
+                                        "Mosaic agent: LISTENER " + ev
+                                                + " executed=" + executed
+                                                + " payload=" + MosaicHooks.hex(payload)));
+                        System.out.println(ok
+                                ? "Mosaic agent: listener registered for " + name
+                                : "Mosaic agent: WARN listener not registered (unknown or unregistered event) " + name);
+                    }
+                }
             } else {
                 System.out.println("Mosaic agent: ERROR runtimeOpen failed, lastError="
                         + mosaic.Bridge.lastError(rt) + " (continuing without bridge)");

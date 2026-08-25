@@ -1,5 +1,11 @@
+import java.util.Arrays;
 import mosaic.MosaicApiException;
 import mosaic.MosaicHandleException;
+import mosaic.runtime.MosaicEventDispatcher;
+import mosaic.runtime.MosaicEventSubscription;
+import mosaic.runtime.MosaicPackBuilder;
+import mosaic.runtime.MosaicRuntime;
+import mosaic.runtime.internal.PackBuilderImpl;
 import mosaic.vanilla.*;
 
 /** 原版域契约测试:版本无关,在 26.2 与 1.8.9 环境分别运行(共享源码)。
@@ -370,6 +376,69 @@ public class VanillaContractTest {
         MosaicPacketSink sink = pkt2 -> check(pkt2 != null, "sink receives non-null MosaicPacket");
         sink.onPacket(netReal.packetOf(null));
         check(true, "sink consumes MosaicPacket projection");
+
+        // ---- Task 3.2:事件监听器运行时契约(双代共用)——Java 观测通道,
+        // 运行时 = C 内核 + JNI(与 MC 版本无关,双代同断言)。
+        // 可用性守卫:C 构建产物(build/lib/libmosaic_jni.so)缺失 → 跳过
+        // (NOTE;独立跑 vanilla 脚本前未 cmake build 的场景;gates.sh 顺序
+        // 构建后必跑)。用例:注册监听器 → ed.dispatch(packet_received 12B
+        // 载荷)真实调用 Bridge.eventDispatch → 监听器收到(eventId/执行数/
+        // 载荷逐字节一致);注册/注销生命周期;重入保护;异常隔离。 ----
+        boolean listenerRtAvailable = new java.io.File("build/lib/libmosaic_jni.so").isFile();
+        if (!listenerRtAvailable) {
+            System.err.println("NOTE: " + p.mcVersion() + " native runtime not built "
+                    + "(build/lib/libmosaic_jni.so missing), event listener runtime cases "
+                    + "skipped; run cmake build first");
+        } else {
+            String lstPackPath = "/tmp/mosaic_vanilla_listener.pack";
+            MosaicPackBuilder pb = PackBuilderImpl.create(lstPackPath, 1, 0, 0, 0, 1);
+            pb.addModule(1, 1, "lst_mod", "/tmp/mosaic_lst_mod.so");   /* 0 函数;so 仅物化才解析 */
+            pb.addEvent("packet_received");
+            check(pb.finish() == 0, "listener pack finish");
+            MosaicRuntime lrt = MosaicRuntime.open(new String[]{lstPackPath});
+            MosaicEventDispatcher led = lrt.eventDispatcher();
+            int prId = lrt.eventId("packet_received");
+            check(prId >= 0, "listener runtime packet_received registered");
+            byte[] pkt12 = new byte[]{7, 0, 0, 0, (byte) 0x05, 0x01, 0, 0, 0x2A, 0, 0, 0};
+            final int[] got = {0};
+            final int[] gotExec = {-1};
+            final byte[][] gotPayload = {null};
+            MosaicEventSubscription ls = led.addEventListener(prId, (ev, executed, payload) -> {
+                got[0]++;
+                gotExec[0] = executed;
+                gotPayload[0] = payload;
+                check(ev != null && ev.eventId() == prId
+                                && "packet_received".equals(ev.name()) && ev.payloadSize() == 12,
+                        "listener receives MosaicEvent packet_received (id/name/12B)");
+            });
+            int nD = led.dispatch(prId, pkt12);
+            check(got[0] == 1, "listener called once (got " + got[0] + ")");
+            check(gotExec[0] == 0 && nD == 0,
+                    "listener executed==0 (no C subscribers), got " + gotExec[0]);
+            check(Arrays.equals(gotPayload[0], pkt12), "listener payload byte-identical (12B)");
+            // 注册/注销生命周期
+            ls.close();
+            led.dispatch(prId, pkt12);
+            check(got[0] == 1, "listener close stops delivery");
+            // 重入保护:监听器内再派发同事件 → depth guard 终止(≤ 8),不无限循环
+            final int[] reent = {0};
+            MosaicEventSubscription lsReent = led.addEventListener(prId, (ev, executed, payload) -> {
+                reent[0]++;
+                if (reent[0] < 1000) led.dispatch(prId, pkt12);
+            });
+            led.dispatch(prId, pkt12);
+            check(reent[0] > 0 && reent[0] <= 8,
+                    "reentrant listener depth-guarded (calls=" + reent[0] + ", max 8)");
+            lsReent.close();
+            // 异常隔离:抛异常的监听器不影响其余监听器与派发返回值
+            final int[] isoOk = {0};
+            led.addEventListener(prId, (ev, executed, payload) -> { throw new RuntimeException("lst boom"); });
+            led.addEventListener(prId, (ev, executed, payload) -> isoOk[0]++);
+            int nIso = led.dispatch(prId, pkt12);
+            check(isoOk[0] == 1, "listener exception isolated (sibling called, got " + isoOk[0] + ")");
+            check(nIso == 0, "listener exception does not affect dispatch return (got " + nIso + ")");
+            lrt.close();
+        }
 
         // ---- M8-B:Recipe(null 语义为主,双代必跑;真实路径留服务端,与 Entity 先例一致。
         // 26.2 Recipe 为接口不可轻量构造、1.8.9 IRecipe 实例虽可构造但双代不对称,

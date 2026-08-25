@@ -62,7 +62,9 @@ CP="build/japi:$JAR:$LIBS"
 cp java-api/mosaic/vanilla/internal/*.properties build/japi/mosaic/vanilla/internal/
 "$JDK/bin/javac" -cp "$CP" -d build/jvanilla \
       tests/jni/vanilla/*.java
-"$JDK/bin/java" -cp "build/jvanilla:$CP" \
+# Task 3:事件监听器运行时契约用例需要 native 库(build/lib/libmosaic_jni.so,
+# cmake build 产物)——java.library.path 指过去;库缺失时用例自动跳过(NOTE)
+"$JDK/bin/java" -Djava.library.path=build/lib -cp "build/jvanilla:$CP" \
      VanillaContractTest Vanilla189Env
 # 1.8.9 成功注册路径(Vanilla189ExtraTest):独立 JVM 进程运行——测试向全局注册表
 # 写入 mosaic:* 测试条目,进程退出即清;26.2 注册表冻结、成功路径不适用,不重复。

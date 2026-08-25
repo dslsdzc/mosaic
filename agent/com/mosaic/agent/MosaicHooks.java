@@ -4,6 +4,8 @@ import mosaic.Bridge;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.List;
+import java.util.Map;
 
 /**
  * M4-2:注入目标的静态 hook 集合(由 MosaicTransformer 在 vanilla 1.20.1 服务端
@@ -176,6 +178,23 @@ public final class MosaicHooks {
        EV_EXEC 为普通 long,锁外并发 read-modify-write 丢更新理论仍可能——自增
        已移入本锁内(dispatch 与 /mosaic test 两处调用点,评审修复),计数安全。 */
     private static final Object DISPATCH_LOCK = new Object();
+
+    /* ---- Task 3:事件监听器(agent 内部注册表,非稳定 API) ----
+       语义与 java-api EventImpl 监听器一致(观测通道):
+         - 广播时机:dispatch 返回后(执行数 = C 订阅者执行数);
+         - 广播定位:DISPATCH_LOCK 之外——监听器回调是用户代码,锁内执行
+           用户代码有死锁/阻塞风险(回调等锁 → 等锁线程持锁等回调);广播
+           携带的(event, executed, payload)是本次派发的局部快照,与锁位置
+           无关,一致性不依赖锁;代价 = 两派发广播的相对顺序可能交错
+           (观测通道的固有并发性,报告定稿);
+         - 重入保护:同线程广播深度 >= 8 丢弃该次广播(嵌套派发照常);
+         - 异常隔离:单监听器抛异常不影响其余监听器与派发路径。 */
+    public interface EventListener {
+        void onEventDispatched(String eventName, int executed, byte[] payload);
+    }
+    private static final Map<Integer, List<EventListener>> LISTENERS = new java.util.HashMap<>();
+    private static final int MAX_LISTENER_DEPTH = 8;
+    private static final ThreadLocal<Integer> LISTENER_DEPTH = ThreadLocal.withInitial(() -> 0);
 
     /* ---- 1.20.1 混淆名反射句柄(premain 阶段服务端类尚未加载,
        故惰性解析:首次 hook 调用时解析,失败自动重试——首 tick 必然成功) ---- */
@@ -740,7 +759,8 @@ public final class MosaicHooks {
                     + " packs=" + Bridge.packCount(rt)
                     + " working_set=" + Bridge.workingSetCount(rt)
                     + " last_error=" + Bridge.lastError(rt)
-                    + " hooks_reflected=" + reflected);
+                    + " hooks_reflected=" + reflected
+                    + " listeners=" + listenerCount());
             for (int i = 0; i < EVENTS.length; i++) {
                 System.out.println("Mosaic agent:   " + EVENTS[i]
                         + " event_id=" + EV_IDS[i]
@@ -797,6 +817,8 @@ public final class MosaicHooks {
                 EV_CALLS[idx]++;
             }
             warnIfTimeout(idx);
+            /* Task 3:test 派发同为真实派发 → 返回后广播监听器(锁外) */
+            broadcastListeners(idx, b, n);
             System.out.println("Mosaic agent: test dispatch " + ev + " -> executed=" + n);
         } else {
             usage();
@@ -856,7 +878,8 @@ public final class MosaicHooks {
 
     /* 派发:事件未注册(-1)→ 跳过;返回执行数累积到静态计数器。
        M9:派发后检查超时(预算生效时 lastError 反映本次派发结果;
-       200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警)。 */
+       200ms 内正常完成 = 0,慢订阅者被跳过 = MOSAIC_ERR_TIMEOUT → 告警)。
+       Task 3:派发返回后广播监听器(锁外,理由见 LISTENERS 注释)。 */
     private static void dispatch(int idx, byte[] payload) {
         if (EV_IDS[idx] < 0) return;
         int n;
@@ -868,6 +891,66 @@ public final class MosaicHooks {
             EV_CALLS[idx]++;
         }
         warnIfTimeout(idx);
+        broadcastListeners(idx, payload, n);
+    }
+
+    /* ---- Task 3:监听器注册/注销(事件名解析;未知事件 → false/空操作) ---- */
+    public static boolean registerListener(String eventName, EventListener listener) {
+        if (listener == null || eventName == null) return false;
+        int idx = eventIndex(eventName);
+        if (idx < 0 || EV_IDS[idx] < 0) return false;
+        synchronized (LISTENERS) {
+            LISTENERS.computeIfAbsent(idx, k -> new java.util.ArrayList<>()).add(listener);
+        }
+        return true;
+    }
+
+    public static void unregisterListener(String eventName, EventListener listener) {
+        int idx = eventIndex(eventName);
+        if (idx < 0 || listener == null) return;
+        synchronized (LISTENERS) {
+            List<EventListener> list = LISTENERS.get(idx);
+            if (list != null) list.remove(listener);
+        }
+    }
+
+    /* 监听器总数(全部事件;status 展示用) */
+    private static int listenerCount() {
+        synchronized (LISTENERS) {
+            int n = 0;
+            for (List<EventListener> l : LISTENERS.values()) n += l.size();
+            return n;
+        }
+    }
+
+    /* 派发返回后广播(锁外):快照副本执行;深度 guard(重入保护);异常隔离。 */
+    private static void broadcastListeners(int idx, byte[] payload, int executed) {
+        int depth = LISTENER_DEPTH.get();
+        if (depth >= MAX_LISTENER_DEPTH) {
+            System.out.println("Mosaic agent: WARN listener broadcast depth exceeded ("
+                    + MAX_LISTENER_DEPTH + "), event \"" + EVENTS[idx]
+                    + "\" not broadcast (reentrancy guard)");
+            return;
+        }
+        List<EventListener> list;
+        synchronized (LISTENERS) {
+            list = LISTENERS.get(idx);
+            if (list == null || list.isEmpty()) return;
+            list = new java.util.ArrayList<>(list);
+        }
+        String name = EVENTS[idx];
+        LISTENER_DEPTH.set(depth + 1);
+        try {
+            for (EventListener l : list) {
+                try {
+                    l.onEventDispatched(name, executed, payload);
+                } catch (Throwable t) {
+                    System.out.println("Mosaic agent: listener error \"" + name + "\": " + t);
+                }
+            }
+        } finally {
+            LISTENER_DEPTH.set(depth);
+        }
     }
 
     /* 超时告警(仅日志):节流 5s 是全局的(单一时间戳,任一事件超时告警后
@@ -883,6 +966,16 @@ public final class MosaicHooks {
         System.out.println("Mosaic agent: WARN event \"" + EVENTS[idx]
                 + "\" dispatch exceeded budget: slow subscriber(s) skipped"
                 + " (err=" + MOSAIC_ERR_TIMEOUT + ")");
+    }
+
+    /* 载荷十六进制(E2E 监听器证据用:大小端原样展示,与 events.h 一致)。
+       public:MosaicHooks 经 appendToBootstrapClassLoaderSearch 由 bootstrap
+       加载器加载,包私有成员对 app 加载器(MosaicAgent)不可访问
+       (IllegalAccessError,监听器 lambda 实测)——public 消除跨加载器访问。 */
+    public static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) sb.append(String.format("%02x", x & 0xff));
+        return sb.toString();
     }
 
     private static void putIntLE(byte[] b, int off, int v) {
