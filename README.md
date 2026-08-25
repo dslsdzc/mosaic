@@ -256,7 +256,7 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
   packet_received/packet_sent 事件,**size_hint = 真实编码/解码字节长度**(入站 =
   decode 入口 readableBytes、出站 = encode 出口 writerIndex;不可得时 0;
   Task 1 服务端 E2E:packet_received calls=6 / packet_sent calls=4,status ping
-  size_hint 非零实测),168 包目录(include/mosaic/packets.h;Task 6 服务端 E2E:
+  size_hint 非零实测),175 包目录(168 顶层 + 7 内嵌变体,include/mosaic/packets.h;Task 6 服务端 E2E:
   packet_received calls=6 / packet_sent calls=4);
   API 面 MosaicNetwork/MosaicPacket/MosaicPacketListener 真实句柄——packetOf 投影
   (typeId = 包目录 id)、listener 注册/注销,双代 Provider 语义映射(26.2 mojmap

@@ -100,13 +100,17 @@ static void test_group_ids(void) {
   MT_CHECK_EQ_U64(handshake, 1);
 }
 
-/* ---- 访问器:逐项与目录同序、越界 null、负 index null ---- */
+/* ---- 访问器:逐项与目录同序、越界 null/0、负 index null/0 ---- */
 static void test_accessor(void) {
-  for (u32 i = 0; i < mosaic_packets_catalog_count; i++)
+  for (u32 i = 0; i < mosaic_packets_catalog_count; i++) {
     MT_CHECK(strcmp(mosaic_packet_catalog_name(i),
                     mosaic_packets_catalog[i].name) == 0);
+    MT_CHECK(mosaic_packet_catalog_id(i) == mosaic_packets_catalog[i].id);
+  }
   MT_CHECK(mosaic_packet_catalog_name(mosaic_packets_catalog_count) == NULL);
   MT_CHECK(mosaic_packet_catalog_name(0xFFFFFFFFu) == NULL);
+  MT_CHECK(mosaic_packet_catalog_id(mosaic_packets_catalog_count) == 0);
+  MT_CHECK(mosaic_packet_catalog_id(0xFFFFFFFFu) == 0);
 }
 
 int main(void) {
