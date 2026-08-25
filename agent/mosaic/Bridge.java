@@ -123,4 +123,8 @@ public final class Bridge {
        PacketCatalogImpl.PACKET_NAMES 同序);越界/负 index → null。契约测试
        遍历全部名字与 PACKET_NAMES 逐项比对。 */
     public static native String packetCatalogName(int index);
+    /* LC-3:目录第 index 个条目的实际 id(packets.c id 列);越界/负 index
+       → 0(UNKNOWN=0 不入目录)。契约测试把公式(base+1+rank,分组表)重算值
+       与目录实际 id 双向比对,防公式/分组表/目录 id 单侧漂移。 */
+    public static native int packetCatalogId(int index);
 }
