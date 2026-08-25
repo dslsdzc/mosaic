@@ -163,7 +163,18 @@ public final class MosaicHooks {
     private static final long[] EV_EXEC = new long[EVENTS.length];   /* dispatch 返回执行数累积 */
     private static final long[] EV_CALLS = new long[EVENTS.length];  /* 派发调用次数 */
     /* 派发处下标常量:init 时按事件名解析(未注册 → -1),不硬编码 EVENTS 数组
-       位置——避免事件名与下标耦合漂移(F-9:dispatch(9/10/11,...) 魔数消除) */
+       位置——避免事件名与下标耦合漂移(F-9:派发下标 9/10/11 魔数消除;
+       ledger cleanup:0..8 裸数字下标同模式常量化——EVENTS 数组顺序为唯一
+       事实源,与 /mosaic status 输出一致) */
+    private static int EV_PLAYER_JOIN = -1;
+    private static int EV_PLAYER_LEAVE = -1;
+    private static int EV_BLOCK_BREAK = -1;
+    private static int EV_TICK = -1;
+    private static int EV_SERVER_COMMAND = -1;
+    private static int EV_BLOCK_PLACE = -1;
+    private static int EV_ENTITY_SPAWN = -1;
+    private static int EV_PLAYER_CHAT = -1;
+    private static int EV_PLAYER_DEATH = -1;
     private static int EV_PLAYER_CMD = -1;
     private static int EV_PACKET_RECV = -1;
     private static int EV_PACKET_SENT = -1;
@@ -263,6 +274,15 @@ public final class MosaicHooks {
         Bridge.setDispatchTimeout(rt, 200_000);
         for (int i = 0; i < EVENTS.length; i++)
             EV_IDS[i] = Bridge.eventId(rt, EVENTS[i]);
+        EV_PLAYER_JOIN = eventIndex("player_join");
+        EV_PLAYER_LEAVE = eventIndex("player_leave");
+        EV_BLOCK_BREAK = eventIndex("block_break");
+        EV_TICK = eventIndex("tick");
+        EV_SERVER_COMMAND = eventIndex("server_command");
+        EV_BLOCK_PLACE = eventIndex("block_place");
+        EV_ENTITY_SPAWN = eventIndex("entity_spawn");
+        EV_PLAYER_CHAT = eventIndex("player_chat");
+        EV_PLAYER_DEATH = eventIndex("player_death");
         EV_PLAYER_CMD = eventIndex("player_command");
         EV_PACKET_RECV = eventIndex("packet_received");
         EV_PACKET_SENT = eventIndex("packet_sent");
@@ -377,7 +397,7 @@ public final class MosaicHooks {
             if (!reflected) return;
             byte[] b = new byte[4];
             putIntLE(b, 0, (Integer) M_ID.invoke(p));
-            dispatch(0, b);
+            dispatch(EV_PLAYER_JOIN, b);
         } catch (Throwable t) { logErr("onPlayerJoin", t); }
     }
 
@@ -388,7 +408,7 @@ public final class MosaicHooks {
             if (!reflected) return;
             byte[] b = new byte[4];
             putIntLE(b, 0, (Integer) M_ID.invoke(p));
-            dispatch(1, b);
+            dispatch(EV_PLAYER_LEAVE, b);
         } catch (Throwable t) { logErr("onPlayerLeave", t); }
     }
 
@@ -409,7 +429,7 @@ public final class MosaicHooks {
             putIntLE(b, 8, (Integer) M_GET_Y.invoke(null, packed));
             putIntLE(b, 12, (Integer) M_GET_Z.invoke(null, packed));
             putIntLE(b, 16, blockType);
-            dispatch(2, b);
+            dispatch(EV_BLOCK_BREAK, b);
         } catch (Throwable t) { logErr("onBlockBreak", t); }
     }
 
@@ -521,7 +541,7 @@ public final class MosaicHooks {
             putIntLE(b, 8, (Integer) M_GET_Y.invoke(null, packed));
             putIntLE(b, 12, (Integer) M_GET_Z.invoke(null, packed));
             putIntLE(b, 16, (Integer) M_BLOCK_ID.invoke(null, state));
-            dispatch(5, b);
+            dispatch(EV_BLOCK_PLACE, b);
         } catch (Throwable t) { logErr("onBlockPlaceResult", t); }
     }
 
@@ -568,7 +588,7 @@ public final class MosaicHooks {
             } catch (Throwable t) { /* dimension 提取失败 → 0 */ }
             putIntLE(b, 20, dim);
             putIntLE(b, 24, 0);   /* source:入口钩子不可得生成来源,固定 0 */
-            dispatch(6, b);
+            dispatch(EV_ENTITY_SPAWN, b);
         } catch (Throwable t) { logErr("onEntitySpawn", t); }
     }
 
@@ -590,7 +610,7 @@ public final class MosaicHooks {
             if (player == null) return;
             byte[] b = new byte[4];
             putIntLE(b, 0, (Integer) M_ID.invoke(player));
-            dispatch(7, b);
+            dispatch(EV_PLAYER_CHAT, b);
         } catch (Throwable t) { logErr("onPlayerChat", t); }
     }
 
@@ -602,7 +622,7 @@ public final class MosaicHooks {
             if (!reflected) return;
             byte[] b = new byte[4];
             putIntLE(b, 0, (Integer) M_ID.invoke(p));
-            dispatch(8, b);
+            dispatch(EV_PLAYER_DEATH, b);
         } catch (Throwable t) { logErr("onPlayerDeath", t); }
     }
 
@@ -745,7 +765,7 @@ public final class MosaicHooks {
             if (!reflected) return;
             byte[] b = new byte[4];
             putIntLE(b, 0, (Integer) M_TICK_COUNT.invoke(server));
-            dispatch(3, b);
+            dispatch(EV_TICK, b);
         } catch (Throwable t) { logErr("onServerTick", t); }
     }
 
