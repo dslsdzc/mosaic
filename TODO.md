@@ -4,6 +4,13 @@
 
 ## 未开始方向(按推荐序)
 
+- [ ] **JNI → Project Panama(FFM)迁移(已宣布,2026-08-25)** — JVM 基线升 Java 25+,
+      JNI 桥接全部迁移 FFM:`src/jni/bridge.c`/javac -h/JNI 头/CMake FindJNI 消失,
+      Bridge 58 个 native 声明 → FFM MethodHandle 绑定(双份 Bridge grep-diff 门禁保留),
+      `SymbolLookup.libraryLookup` 直接 dlopen 内核库;载荷 byte[] 用
+      `MemorySegment.ofArray` 零拷贝。可行前提已核实:Mosaic 的 JNI 全是 downcall
+      (C 内核纯 C 不回调 Java),FFM downcall 完整覆盖。迁移后 run_jni_test.sh 变
+      FFM 绑定测试;契约测试/E2E 全部重跑验证。渲染层的 FFM 绑定(SDL3)同用此基座。
 - [ ] **1.20.1 Provider(Vanilla1201Provider)** — Java mod 经稳定 API 在服务端跑的全链路最后一块:
       26.2/1.8.9 是契约环境(反射读 jar),1.20.1 是真实服务端但只有 agent;补 Provider 后
       java-api 上服务端 classpath,Java mod(订阅事件/注册命令/听监听器)在 1.20.1 真实运行的
@@ -25,8 +32,10 @@
 
 - **MC_VER 升级**:`ci/gen_packet_map.sh` 内嵌类总数守卫(54)必红属期望行为——须同时更新
   INNER_CLASS_TOTAL、VARIANT_OUTERS 白名单与 packets.c 目录追加块(脚本注释已预告)。
-- **新增 JNI**:必须 java/mosaic/Bridge.java ↔ agent/mosaic/Bridge.java 双份逐字同步 + grep-diff 门禁;
+- **新增 JNI(FFM 迁移前)**:必须 java/mosaic/Bridge.java ↔ agent/mosaic/Bridge.java 双份逐字同步 + grep-diff 门禁;
   验证必须覆盖 `ci/build_mc_agent.sh`(2026-08-25 LC-3 的 Critical 根因是验证绕过唯一执法点)。
+- **FFM 迁移后**:双份 Bridge 的 grep-diff 门禁保留(FFM 绑定声明同样双份);JVM 基线 25+,
+  环境 java-26 用于 26.2 契约;E2E 服务端(1.20.1)在 Java 25 上运行需先验证(服务端无渲染依赖,预期可行)。
 - **只增不减**:API/事件目录/载荷只加不改;包目录加条目走追加块(不重编号既有 id)。
 - **事件目录计数**:205 已派生化(无硬编码字面量);加事件只插排序位,双端(N2)自动比对。
 - **E2E 诚实纪律**:客户端依赖路径如实标注;evidence 只写实测。

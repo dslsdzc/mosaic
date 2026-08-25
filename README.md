@@ -30,7 +30,7 @@
 
 ```bash
 ./ci/gates.sh          # Release 构建 + 全部测试 + 10M 基准门禁 + 100M 分片门禁 + 世界场景门禁
-bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 21)
+bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 25+;FFM 迁移后为 FFM 绑定测试)
 ```
 
 ## 核心指标(CI 门禁,实测为多轮稳定代表值)
@@ -51,7 +51,7 @@ bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 21)
 ```
 include/mosaic/  稳定 C API 头(base/pack/runtime/module/function/event/ownership/eviction/deps/tx/sched/world/descriptor/events/packets)
 src/             pack_builder·runtime·index·working_set·lifecycle·trigger·ownership·eviction·deps·tx·genroute·sched·world·descriptor·events·packets
-src/jni/         JVM Bridge(JNI 双向通道,M4-1)
+src/jni/         JVM Bridge(JNI 双向通道,M4-1;FFM 迁移中——将并入 Java 侧绑定)
 java/mosaic/     Java 稳定 API 面(mosaic.Bridge)
 agent/           自研注入引擎(javaagent + ClassFileTransformer + hooks,M4-2)
 bench/           合成宇宙 + S1-S5 基准 + 世界场景 + pack 生成器 + 最小 MC 客户端(mc_client,play 阶段 E2E)
@@ -65,7 +65,7 @@ ci/              gates.sh·setup_mc_versions.sh·run_vanilla_contract_*.sh·setu
 ```
 Minecraft 服务端 (vanilla 1.20.1,jar 零修改)
     ↕ 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)
-JVM Bridge (JNI,载荷小端 byte[] ↔ events.h 结构体)
+JVM Bridge (Project Panama FFM,载荷小端 byte[] ↔ events.h 结构体)
     ↕ Stable Runtime ABI
 C Runtime Core (mmap 冷存储 / 紧凑索引 / 工作集 / 状态机 / 触发索引 / 事务 / 调度)
     ↕ 模块 ABI v2 (dlopen,code 表 + state_transform 表)
@@ -86,13 +86,20 @@ Mod Universe (pack 文件:记录 48B/64B/16B,分片可挂载)
 结构体大小(例:方块事件 20B = player_id/x/y/z/block_type;玩家事件 4B、
 player_command 8B、实体事件 28B)。
 
-构建与运行 JNI 测试(需要 JDK 21;JAVA_HOME 未设时用 `/usr/lib/jvm/default`):
+**JVM 基线:Java 25+;桥接层迁移 Project Panama(FFM)进行中**(2026-08-25 决策):
+Mosaic 的 JNI 全部是 downcall(Java→C 单向;C 内核纯 C 不回调 Java),FFM
+`Linker.downcallHandle` 完整覆盖,`SymbolLookup.libraryLookup` 自带 dlopen。
+迁移后:`src/jni/bridge.c`、javac -h、JNI 头文件、CMake FindJNI 全部消失,
+Bridge 的 native 声明变为 FFM MethodHandle 绑定(双份 Bridge 的 grep-diff
+一致性门禁保留)。
+
+构建与运行 Bridge 测试(需要 JDK 25+;JAVA_HOME 未设时用 `/usr/lib/jvm/default`):
 
 ```bash
 bash ci/run_jni_test.sh      # cmake build → gen_test_pack → javac → java 断言,exit 0
 ```
 
-产物:`build/lib/libmosaic_jni.so`(CMake FindJNI + mosaic_core 静态库链接)。
+产物:`build/lib/libmosaic_core.so`(内核库;FFM 迁移后由 `libraryLookup` 直接加载)。
 
 ## 1.20.1 服务端集成(M4-2)
 
@@ -284,6 +291,8 @@ Mosaic 对 1.20.1 网络协议层的观测投影:
   计划 `docs/superpowers/plans/2026-08-25-render-layer-implementation.md`),服务端
   阶段完成后启用:FFM 重实现 LWJGL2 同名类 + SDL3 全栈替换,让老版本 MC(1.8.9 →
   最低 1.0)跑新 JVM 并给 Mod 作者统一渲染 API(`mosaic.render.*`)。
+- **JVM 基线 Java 25+**(2026-08-25 决策):JNI 桥接迁移 Project Panama(FFM)
+  进行中;迁移完成前 `src/jni/` 与既有 JNI 加载链仍工作(向后兼容过渡期)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
 - 派发跨线程不在支持范围:agent 的 Netty IO 线程包钩子(packet_received/sent)
   与服务器线程的 tick/命令派发并发执行,冷订阅者(未物化)并发物化存在竞态
