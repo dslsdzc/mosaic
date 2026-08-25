@@ -16,6 +16,10 @@
 | **M3** 合成世界 | 事件类型 API v1(205 事件目录 + 载荷签名 + 频率档)、合成世界模拟器、世界场景门禁 | 完成:生命周期全循环 58.7μs;稀疏订阅工作集 28,149/100,000(≪ 总数) |
 | **M4** 真实 MC | 自研 javaagent 注入(ClassFileTransformer + 自研 hook 点)、vanilla 1.20.1 集成、世界内动态加载 | 完成:服务端 tick→注入→bridge→C 派发活循环;运行中 install 新 pack 下个 tick 即生效,零重启 |
 | **M5** 稳定 API 面 | 31 大类 Java 接口(21 运行时域 + 10 原版域)、26.2/1.8.9 双代 Provider 契约、只增不减兼容套件 + 版本校验 + 全量门禁 | 完成:双代契约同套件全绿(API VERSION TEST + V1 SAMPLE OK);v1 签名被删/改 = 门禁红 |
+| **M6** 接口补齐 | 19 个零实现接口全部实现(事件/状态/触发/元数据/任务/租约/服务等域),N2 事件目录双端门禁 | 完成:31 大类接口全部就绪,契约测试全绿 |
+| **M7** 契约深化 | 原版域契约 10/10 域、command 双代同跑(重名守卫语义统一)、MosaicProvider 12 工厂全绿 | 完成:契约断言 47+,双代全绿 |
+| **M8** 写路径/内容域 | Registry 注册(26.2 扁平化锚定)、World.setBlock、Recipe/Enchantment/LivingEntity/StatusEffect/Tag/BlockEntity 域、agent 桥接(9 事件 + 聊天命令) | 完成:映射表污染修复(13 条静默失效)、E2E 抓出自递归类加载与并发派发 SIGSEGV 并修复 |
+| **M9** 观测面 + 清理 | 网络域完整(175 包目录 + packet_received/sent 事件 + 编解码器挂钩真实 size)、Java 事件监听器通道(稳定 API)、play 阶段最小客户端 E2E、台账小项清零 | 完成:监听器 1:1 收到真实包事件;KeepAlive 回显实测;play 阶段 join/chat/command/实体全真实路径证据 |
 
 ## 设计
 
@@ -40,20 +44,20 @@ bash ci/run_jni_test.sh  # JVM Bridge 测试(需 JDK 21)
 | S-W1 世界生命周期 | 加入→物化→墓碑→重进恢复 | 58.7 μs | ≤ 500 μs |
 | S-W2b 稀疏工作集 | 2% 高频订阅下 ws/总数 | 0.281 | ≪ 1 |
 
-测试:17 个 C 套件(单元/属性/事务/线程/描述符/世界/网络包)+ JNI 23 断言 + 真实 1.20.1 服务端端到端;ASan/UBSan/TSan 干净。
+测试:17 个 C 套件(单元/属性/事务/线程/描述符/世界/网络包)+ JNI 契约测试(运行时/API 版本/双代原版域/监听器通道)+ 真实 1.20.1 服务端端到端(含 play 阶段最小客户端);ASan/UBSan/TSan 干净。
 
 ## 布局
 
 ```
-include/mosaic/  稳定 C API 头(base/pack/runtime/module/function/event/ownership/eviction/deps/tx/sched/world/descriptor/events)
-src/             pack_builder·runtime·index·working_set·lifecycle·trigger·ownership·eviction·deps·tx·genroute·sched·world·descriptor·events
+include/mosaic/  稳定 C API 头(base/pack/runtime/module/function/event/ownership/eviction/deps/tx/sched/world/descriptor/events/packets)
+src/             pack_builder·runtime·index·working_set·lifecycle·trigger·ownership·eviction·deps·tx·genroute·sched·world·descriptor·events·packets
 src/jni/         JVM Bridge(JNI 双向通道,M4-1)
 java/mosaic/     Java 稳定 API 面(mosaic.Bridge)
 agent/           自研注入引擎(javaagent + ClassFileTransformer + hooks,M4-2)
-bench/           合成宇宙 + S1-S5 基准 + 世界场景 + pack 生成器
+bench/           合成宇宙 + S1-S5 基准 + 世界场景 + pack 生成器 + 最小 MC 客户端(mc_client,play 阶段 E2E)
 tests/           mini_test 单元/属性测试 + tests/jni(JNI/契约/版本测试)
 compat/          v1 API 兼容样例(只增不减机器保证)
-ci/              gates.sh·setup_mc_versions.sh·run_vanilla_contract_*.sh·setup_mc_server.sh·build_mc_agent.sh·run_jni_test.sh
+ci/              gates.sh·setup_mc_versions.sh·run_vanilla_contract_*.sh·setup_mc_server.sh·build_mc_agent.sh·run_jni_test.sh·run_mc_client_e2e.sh·gen_packet_map.sh
 ```
 
 ## 架构
@@ -216,6 +220,23 @@ tick 立即执行(世界内加载生效);重叠安装 world.pack(模块 1 与已
 bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 → 运行
 ```
 
+## 网络域(观测,M9)
+
+Mosaic 对 1.20.1 网络协议层的观测投影:
+
+- **包目录**(`include/mosaic/packets.h`,175 条 = 168 顶层 + 7 内嵌变体):1.20.1 全量
+  包类型稳定 id(方向分组 0x0101..0x0901),双端 N2 门禁(packets.c ↔ PACKET_NAMES)+
+  公式门禁(PacketCatalogImpl 推导 ↔ 目录逐 id 双向比对)防漂移;映射表由
+  `ci/gen_packet_map.sh` 从 Mojang server_mappings 生成(内嵌类总数硬守卫)。
+- **packet_received / packet_sent 事件**(事件目录 205→207,载荷 12B
+  `{player_id, packet_id, size_hint}`):1.20.1 编解码器挂钩(PacketDecoder.decode
+  入站大小 + channelRead0 类型/派发、PacketEncoder.encode 出口出站派发),size_hint
+  = 真实编码/解码字节长度;出站语义 = "编码成功"(ATHROW 失败不派发)。
+- **Java API 面**:`MosaicNetwork`/`MosaicPacket`/`MosaicPacketListener` 真实句柄,
+  typeId 投影到包目录,双代 Provider 语义映射(26.2 mojmap 直对 / 1.8.9 MCP 对照表,
+  独有包 → UNKNOWN(0)),契约全绿。
+- **观测通道**:Java 事件监听器(下一节)+ C 订阅者并行,不互斥。
+
 ## 事件监听器(Java 观测通道)(Task 3)
 
 **机制**:所有 C 派发都源自 Java 调用 `Bridge.eventDispatch`(内核无自触发
@@ -251,25 +272,18 @@ bash compat/v1-sample/run.sh   # 自包含:生成 pack → 编译 japi + 样例 
 ## 已知边界
 
 - 1.20.1 服务端运行需接受 Mojang EULA(`mc-server/eula.txt` → `eula=true`,本地测试已接受)。
-- 网络真实路径(内核 + API 面就绪):1.20.1 编解码器挂钩(PacketDecoder.decode 入站
-  大小 + channelRead0 类型/派发、PacketEncoder.encode 出口出站派发)触发
-  packet_received/packet_sent 事件,**size_hint = 真实编码/解码字节长度**(入站 =
-  decode 入口 readableBytes、出站 = encode 出口 writerIndex;不可得时 0;
-  Task 1 服务端 E2E:packet_received calls=6 / packet_sent calls=4,status ping
-  size_hint 非零实测),175 包目录(168 顶层 + 7 内嵌变体,include/mosaic/packets.h;Task 6 服务端 E2E:
-  packet_received calls=6 / packet_sent calls=4);
-  API 面 MosaicNetwork/MosaicPacket/MosaicPacketListener 真实句柄——packetOf 投影
-  (typeId = 包目录 id)、listener 注册/注销,双代 Provider 语义映射(26.2 mojmap
-  名直接对目录名 / 1.8.9 MCP 语义对照表,1.8.9 独有包 → UNKNOWN(0)),26.2/1.8.9
-  契约全绿。
-- packet_sent 出站语义为"编码成功"而非"请求发送":PacketEncoder.encode 唯一
-  RETURN 出口前派发,ATHROW(编码失败)出口不派发——编码失败/中途异常丢弃的包
-  不计入 packet_sent(与包目录/事件目录语义一致,见 task-1-report.md)。
-- 网络包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注;sendPacket 的包编码
-  与 vanilla API 监听器(MosaicPacketListener)→ 内核事件的分发接线待服务端环境;
-  运行时事件监听器通道(本 README"事件监听器"节)已由 Task 3 交付并 E2E 验证)。
+- 网络观测面已完整(见"网络域"小节):packet_sent 出站语义 = "编码成功"而非
+  "请求发送"(PacketEncoder.encode 唯一 RETURN 出口前派发,ATHROW 编码失败不派发);
+  包内容序列化 v1 未实现(MosaicPacket.sizeHint 恒 0 标注)。
+- 网络写路径未实现:sendPacket 的包编码与 vanilla API 监听器(MosaicPacketListener)
+  → 内核事件的分发接线待服务端环境;运行时事件监听器通道("事件监听器"节)已交付
+  并 E2E 验证。
 - 1.20.1 Provider(java-api 上 1.20.1 服务端)仍后补:运行时监听器观测通道已
   经 agent 接线(E2E 实测),但 `mosaic.vanilla` Provider 的服务端形态未交付。
+- 渲染层现代化方向已设计存档(设计 `docs/superpowers/specs/2026-08-25-render-layer-direction-design.md`,
+  计划 `docs/superpowers/plans/2026-08-25-render-layer-implementation.md`),服务端
+  阶段完成后启用:FFM 重实现 LWJGL2 同名类 + SDL3 全栈替换,让老版本 MC(1.8.9 →
+  最低 1.0)跑新 JVM 并给 Mod 作者统一渲染 API(`mosaic.render.*`)。
 - `mosaic_runtime_add_pack` 非线程安全(单线程服务端线程前提)。
 - 派发跨线程不在支持范围:agent 的 Netty IO 线程包钩子(packet_received/sent)
   与服务器线程的 tick/命令派发并发执行,冷订阅者(未物化)并发物化存在竞态
